@@ -1,0 +1,9 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/hashes.v1.json",
+  "updated": "2026-04-08",
+  "entries": [],
+  "notes": [
+    "SHA256 hashes of specific malicious files. When clonesafe fetches a file via raw.githubusercontent.com, it can compute the hash and compare against this list.",
+    "Add hashes from published sandbox reports (ANY.RUN, Joe Sandbox, VirusTotal submissions)."
+  ]
+}

@@ -1,0 +1,23 @@
+# Local data — user reports and tracker stay private
+data/reports/*
+!data/reports/.gitkeep
+data/tracker.tsv
+data/*.local
+
+# Node / tooling (for future cli/ phase)
+node_modules/
+dist/
+.env
+.env.local
+.DS_Store
+
+# Claude Code session metadata (if any)
+.claude/
+
+# Temp scan artifacts
+.clonesafe-cache/
+tmp/
+*.tmp
+
+# nohup.out from accidentally-triggered prepare hooks in samples
+nohup.out

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/domains.v1.json",
+  "updated": "2026-04-10",
+  "entries": [
+    {
+      "id": "IOC-2026-010",
+      "identifier": "ipcheck-six.vercel.app",
+      "type": "domain",
+      "first_seen": "2026-04-08",
+      "campaign": "contagious-interview-001",
+      "source": "self-reported (clonesafe sample 001)",
+      "source_url": "../samples/contagious-interview-001/",
+      "description": "Stage-1 exfil + stage-2 payload delivery endpoint observed in an April 2026 Contagious Interview campaign instance. Referenced from routes/api/auth.js as a base64-encoded URL. The endpoint accepts a POST with process.env as the body and responds with JavaScript that is executed via new Function(). Vercel free-subdomain infrastructure — attacker-controlled, no connection to any legitimate Vercel-hosted project.",
+      "confidence": "high"
+    },
+    {
+      "id": "IOC-2026-011",
+      "identifier": "sfrclak.com",
+      "type": "domain",
+      "first_seen": "2026-03-31",
+      "campaign": "axios-compromise-2026",
+      "source": "Cyber Desserts, SoCRadar",
+      "source_url": "https://blog.cyberdesserts.com/axios-npm-supply-chain-attack/",
+      "description": "C2 domain used by the axios RAT dropper (plain-crypto-js). All workstations and build servers should block this domain.",
+      "confidence": "high",
+      "attribution": "North Korea-nexus"
+    },
+    {
+      "id": "IOC-2026-012",
+      "identifier": "142.11.206.73",
+      "type": "ip",
+      "first_seen": "2026-03-31",
+      "campaign": "axios-compromise-2026",
+      "source": "Cyber Desserts, SoCRadar",
+      "source_url": "https://blog.cyberdesserts.com/axios-npm-supply-chain-attack/",
+      "description": "C2 IP used by the axios RAT.",
+      "confidence": "high"
+    },
+    {
+      "id": "IOC-2021-010",
+      "identifier": "citationsherbe.at",
+      "type": "domain",
+      "first_seen": "2021-10-22",
+      "campaign": "ua-parser-js-hijack-2021",
+      "source": "GitHub Advisory GHSA-pjwm-rvh2-c87w, Sonatype",
+      "source_url": "https://github.com/advisories/GHSA-pjwm-rvh2-c87w",
+      "description": "C2 domain used by the ua-parser-js cryptominer/stealer payload (jsextension binary download).",
+      "confidence": "high"
+    },
+    {
+      "id": "IOC-2024-020",
+      "identifier": "eoi2ectd5a5tn1h.m.pipedream.net",
+      "type": "domain",
+      "first_seen": "2024-09-01",
+      "campaign": "chalk-debug-typosquat-2024",
+      "source": "Socket.dev, Phylum",
+      "source_url": "https://socket.dev/blog/chalk-debug-typosquat-attack-wave",
+      "description": "Exfiltration endpoint used by the September 2024 chalk+debug typosquat wave. Pipedream webhook used to collect stolen environment variables.",
+      "confidence": "high"
+    }
+  ],
+  "pattern_iocs": [
+    {
+      "id": "IOC-2026-PAT-001",
+      "pattern": "^[a-z]+-six\\.vercel\\.app$",
+      "description": "Pattern of throwaway Vercel subdomains ending in '-six' used by multiple commodity crypto-stealer campaigns in 2026. Seen: ipcheck-six, dat3-six, miscommunication-six.",
+      "source": "Cloudflare Cloudforce One, ANY.RUN sandbox reports",
+      "confidence": "medium"
+    },
+    {
+      "id": "IOC-2024-PAT-001",
+      "pattern": "\\.pipedream\\.net$",
+      "description": "Pipedream webhook endpoints frequently abused as exfiltration receivers by npm supply chain attackers. Legitimate use exists but seeing a pipedream URL in source code of a dependency is suspicious.",
+      "source": "Socket.dev",
+      "confidence": "medium"
+    }
+  ],
+  "notes": [
+    "Treat all *.vercel.app, *.netlify.app, *.glitch.me, *.repl.co, *.ngrok.io subdomains with additional scrutiny — these are commonly abused because attackers can spin them up for free.",
+    "Add domains from CISA AA24 DPRK IT worker advisories, Treasury OFAC SDN list, Mandiant UNC5267 reports, any FBI IC3 PSAs on fake IT workers.",
+    "Priority additions for future updates: domains from Phylum PhantomRaven research, JFrog malicious package reports, Checkmarx supply chain writeups."
+  ]
+}

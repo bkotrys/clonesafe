@@ -1,0 +1,12 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/recruiters.v1.json",
+  "updated": "2026-04-08",
+  "entries": [],
+  "notes": [
+    "IOCs for use by the companion tool `job-scam-detector`. Clonesafe itself does not use this file directly.",
+    "Be extremely careful about additions here. Only include handles/emails/domains with strong, citable evidence and ideally only after public attribution (FBI seizures, CISA advisories, news reports).",
+    "Never add an entry based on a single victim's report — require corroboration.",
+    "Do NOT add real people's names even if suspicious; use only handles, emails, and domain-level identifiers.",
+    "Consider GDPR Article 9 (biometric data) and Polish art. 212 KK (criminal libel) before adding any personal identifier."
+  ]
+}

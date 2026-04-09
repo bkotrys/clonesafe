@@ -1,0 +1,19 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/github-orgs.v1.json",
+  "updated": "2026-04-08",
+  "entries": [],
+  "notes": [
+    "This file is intentionally empty at launch. Adding attacker-controlled org names here is risky because operators routinely use brand-impersonation typosquats of legitimate projects. Publishing a scam-org identifier publicly can collaterally damage the real legitimate project's reputation through pure name-association.",
+    "Policy for adding entries:",
+    "  1. Org must be definitively attacker-controlled (not an impersonated real project).",
+    "  2. Must have a citable public source (CISA/FBI/Mandiant/Unit 42/Snyk/Socket/Phylum/ESET advisory).",
+    "  3. Attribution must be explicit in the source.",
+    "  4. For typosquats: prefer detecting via pattern rules (Levenshtein distance from known legitimate orgs) over naming the specific squat.",
+    "Known historical attacker-controlled fronts from public sources (subject to policy above before adding):",
+    "  - BlockNovas (FBI seized 2025)",
+    "  - SoftGlide (FBI seized 2025)",
+    "  - Angeloper (FBI seized 2025)",
+    "  - See Mandiant UNC5267 / 'Famous Chollima' writeups for additional persona clusters.",
+    "Clonesafe's own sample 001 uses brand impersonation — the attacker-controlled org name is intentionally REDACTED from this repo to avoid harming the impersonated legitimate Web3 project. See samples/contagious-interview-001/README.md for the policy rationale."
+  ]
+}

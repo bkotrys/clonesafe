@@ -1,0 +1,35 @@
+{
+  "name": "clonesafe",
+  "version": "0.1.0",
+  "description": "Pre-clone GitHub repo scanner. Catches malicious npm packages, supply chain attacks, and Contagious Interview threats before git clone touches your disk.",
+  "license": "MIT",
+  "author": "Bartosz Kotrys <bkotrys@users.noreply.github.com>",
+  "bin": {
+    "clonesafe": "./cli/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "cli/",
+    "iocs/"
+  ],
+  "keywords": [
+    "security",
+    "npm",
+    "supply-chain",
+    "scanner",
+    "malware",
+    "pre-clone",
+    "contagious-interview",
+    "typosquat"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bkotrys/clonesafe.git"
+  },
+  "homepage": "https://github.com/bkotrys/clonesafe",
+  "bugs": {
+    "url": "https://github.com/bkotrys/clonesafe/issues"
+  }
+}

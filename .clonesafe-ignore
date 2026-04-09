@@ -1,0 +1,17 @@
+# Paths excluded from clonesafe scanning.
+#
+# clonesafe is a security-research project that ships real malware samples
+# and synthetic injection test fixtures. Scanning this repo with clonesafe
+# would correctly flag those samples as malicious — which is working as
+# intended, but produces a misleading BLOCK verdict for the repo overall.
+#
+# This file tells vet-repo and deep-scan to skip these paths.
+# Other projects can adopt the .clonesafe-ignore convention for their own
+# test fixtures, vendor directories, or known-good paths.
+
+# Malware samples (captured + synthetic) — deliberately contain malicious patterns
+samples/
+
+# Future: test fixtures, vendor directories
+# tests/fixtures/
+# vendor/
