@@ -132,24 +132,28 @@ function checkD12(gitmodules) {
 }
 
 // D13: Lockfile non-registry resolved URLs
+// Supports: package-lock.json (npm v2/v3), bun.lock (npm-compatible JSON-ish),
+//           yarn.lock (Yarn v1 syntax), pnpm-lock.yaml (pnpm v6+ YAML)
 function checkD13(lockfiles) {
+  const isRegistryUrl = (url) =>
+    !!url && (url.startsWith('https://registry.npmjs.org/') ||
+              url.startsWith('https://registry.yarnpkg.com/'));
+
   let count = 0;
   for (const content of lockfiles) {
-    // package-lock.json format
-    const resolvedMatches = content.match(/"resolved"\s*:\s*"([^"]*)"/g) || [];
-    for (const m of resolvedMatches) {
-      const url = m.match(/"resolved"\s*:\s*"([^"]*)"/)?.[1] || '';
-      if (url && !url.startsWith('https://registry.npmjs.org/') && !url.startsWith('https://registry.yarnpkg.com/')) {
-        count++;
-      }
+    // package-lock.json / bun.lock JSON shape: "resolved": "<url>"
+    for (const m of content.matchAll(/"resolved"\s*:\s*"([^"]*)"/g)) {
+      if (m[1] && /^https?:\/\//.test(m[1]) && !isRegistryUrl(m[1])) count++;
     }
-    // yarn.lock format
-    const yarnMatches = content.match(/resolved\s+"([^"]*)"/g) || [];
-    for (const m of yarnMatches) {
-      const url = m.match(/resolved\s+"([^"]*)"/)?.[1] || '';
-      if (url && !url.startsWith('https://registry.npmjs.org/') && !url.startsWith('https://registry.yarnpkg.com/')) {
-        count++;
-      }
+    // yarn.lock shape: resolved "<url>"
+    for (const m of content.matchAll(/^\s*resolved\s+"([^"]*)"/gm)) {
+      if (m[1] && /^https?:\/\//.test(m[1]) && !isRegistryUrl(m[1])) count++;
+    }
+    // pnpm-lock.yaml shape: tarball: <url>  (inline inside resolution: {...} or as a multi-line key).
+    // pnpm only emits an explicit `tarball:` when the URL deviates from its default registry,
+    // so any non-registry hit is a finding.
+    for (const m of content.matchAll(/(?:^|[{,\s])tarball:\s*(https?:\/\/[^\s,}]+)/g)) {
+      if (!isRegistryUrl(m[1])) count++;
     }
   }
   return count;
@@ -209,9 +213,9 @@ function runAllChecks(files, iocDB) {
     }
   }
 
-  // Collect lockfiles
+  // Collect lockfiles (text formats only — bun.lockb binary is intentionally skipped)
   const lockfiles = [];
-  for (const name of ['package-lock.json', 'yarn.lock']) {
+  for (const name of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock']) {
     if (files.has(name)) lockfiles.push(files.get(name));
   }
 

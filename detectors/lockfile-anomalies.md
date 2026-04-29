@@ -1,53 +1,84 @@
 ---
 detector: lockfile-anomalies
-applies-to: "package-lock.json, yarn.lock, pnpm-lock.yaml"
+applies-to: "package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock"
 risk-family: dependency-integrity
 ---
 
 # Detector: lockfile anomalies
 
-Lockfiles pin exact dependency versions and resolve URLs. Manipulated lockfiles can redirect installs to attacker-controlled tarballs, pin known-bad versions, or inject dependencies that bypass `package.json` review. These rules catch lockfile states that deviate from normal npm registry resolution.
+Lockfiles pin exact dependency versions and resolve URLs. Manipulated lockfiles can redirect installs to attacker-controlled tarballs, pin known-bad versions, or inject dependencies that bypass `package.json` review. These rules catch lockfile states that deviate from normal registry resolution.
+
+**Per-format coverage:**
+| Lockfile | LF-001 | LF-002 | LF-003 | LF-004 | LF-005 | LF-006 |
+|---|---|---|---|---|---|---|
+| `package-lock.json` (npm v2/v3) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (v3-only field) |
+| `yarn.lock` (Yarn v1) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `pnpm-lock.yaml` (pnpm v6+) | ✓ | ✓ | ✓ | ✓ | ✓ | — (no equivalent flag) |
+| `bun.lock` (text) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `bun.lockb` (binary) | flag-presence-only — clonesafe cannot grep binary lockfiles |
 
 ## Rules
 
 ### LF-001 — non-registry resolved URL
 **Risk:** 🔴 CRITICAL
-**Matches:** Any `resolved` field in `package-lock.json` or `yarn.lock` that does NOT point to `registry.npmjs.org` or `registry.yarnpkg.com`.
+**Matches:** Any resolved-tarball URL in `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, or `bun.lock` that does NOT point to `registry.npmjs.org` or `registry.yarnpkg.com`.
 
-Regex (applied to lockfile content):
+Each lockfile format encodes the resolved URL differently — apply the regex appropriate to the format:
+
+**package-lock.json (npm v2/v3) and bun.lock:**
 ```
 "resolved"\s*:\s*"(?!https://registry\.npmjs\.org/)(?!https://registry\.yarnpkg\.com/)[^"]*"
 ```
 
-For yarn.lock (different format):
+**yarn.lock:**
 ```
 resolved\s+"(?!https://registry\.npmjs\.org/)(?!https://registry\.yarnpkg\.com/)[^"]*"
 ```
 
-**Why suspicious:** the npm and yarn registries are the canonical sources. A `resolved` URL pointing anywhere else — GitHub raw URLs, personal servers, S3 buckets, Vercel deployments — means the dependency was explicitly redirected. This is the primary mechanism for lockfile injection attacks.
+**pnpm-lock.yaml (pnpm v6+):** pnpm omits the tarball key when the URL matches its default registry, so simply *any* `tarball:` line whose URL isn't an npm/yarn registry is a hit:
+```
+(^|[{,[:space:]])tarball:\s*(?!https?://(registry\.npmjs\.org|registry\.yarnpkg\.com)/)https?://[^\s,}]+
+```
 
-**Real-world example:** the Codecov supply chain attack (2021) involved modifying a CI script, but lockfile manipulation is the npm-native equivalent — an attacker with repo write access changes `resolved` URLs to serve backdoored tarballs.
+A pnpm-lock entry typically looks like one of:
+```yaml
+'/some-pkg@1.2.3':
+  resolution: {integrity: sha512-...}                      # default registry — NOT a hit
+'wa-sqlite@https://codeload.github.com/.../tar.gz/abc123':
+  resolution: {tarball: https://codeload.github.com/..., integrity: sha512-...}   # hit
+```
 
-**False positives:** private registries (Artifactory, Nexus, Verdaccio, GitHub Packages) use custom URLs. Check if the domain looks like a legitimate registry:
+**bun.lockb** is a binary file. clonesafe cannot grep it; flag presence and note that LF-001 is skipped for that file.
+
+**Why suspicious:** the npm and yarn registries are the canonical sources. A resolved URL pointing anywhere else — GitHub raw URLs, personal servers, S3 buckets, Vercel deployments — means the dependency was explicitly redirected. This is the primary mechanism for lockfile injection attacks.
+
+**Real-world example:** the Codecov supply chain attack (2021) involved modifying a CI script, but lockfile manipulation is the npm-native equivalent — an attacker with repo write access changes resolved URLs to serve backdoored tarballs.
+
+**False positives:** private registries (Artifactory, Nexus, Verdaccio, GitHub Packages) use custom URLs; some legitimate packages are distributed only via vendor CDNs or GitHub releases (e.g. `xlsx` from `cdn.sheetjs.com` after sheetjs left npm in 2023, or `wa-sqlite` pinned to a commit on `codeload.github.com`). Check if the domain looks like a legitimate registry or a known vendor CDN:
 ```
 registry\.npmjs\.org
 registry\.yarnpkg\.com
 npm\.pkg\.github\.com
 .*\.jfrog\.io
 .*\.artifactoryonline\.com
+codeload\.github\.com           # github source tarballs (commit-pinned)
+cdn\.sheetjs\.com               # sheetjs official distribution (post-2023 npm exit)
 ```
+Even when the URL is benign, the WARN floor still fires so the user reviews each one — the rule is conservative on purpose.
 
 ---
 
 ### LF-002 — git+ssh dependency URL
 **Risk:** 🔴 CRITICAL
-**Matches:** Any lockfile entry with `git+ssh://` or `git+https://` as the resolved protocol.
+**Matches:** Any lockfile entry (any of `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`) with `git+ssh://` or `git+https://` as the resolved protocol.
 
-Regex:
+Regex (format-independent):
 ```
 git\+ssh://
 git\+https://
 ```
+
+For pnpm-lock.yaml, this typically appears as `resolution: {type: git, repo: git+ssh://..., commit: ...}` or as a key like `<pkg>@git+ssh://...:<commit>`. The bare-protocol regex catches all variants.
 
 **Why suspicious:** `git+ssh://` dependencies bypass the npm registry entirely, pulling code directly from a git repo. The resolved content isn't checksummed against the registry. An attacker who controls the git repo can push arbitrary changes that `npm install` will silently pull.
 
@@ -60,23 +91,33 @@ git\+https://
 ### LF-003 — missing or unusual integrity hash
 **Risk:** 🟠 HIGH
 **Matches:** Lockfile entries where:
-1. `resolved` is present but `integrity` is missing entirely, OR
+1. A resolved URL is present but `integrity` is missing entirely, OR
 2. `integrity` uses an algorithm other than `sha512` (e.g., `sha1-`, `md5-`), OR
 3. `integrity` field is empty string
 
-Regex for missing integrity (package-lock.json v2/v3):
+**package-lock.json (v2/v3) — missing integrity:**
 ```
 "resolved"\s*:\s*"[^"]+",?\s*\n\s*(?!"integrity")
 ```
 
-Regex for weak hash:
+**Weak hash (any JSON-style lockfile):**
 ```
 "integrity"\s*:\s*"(sha1-|md5-)"
 ```
 
-**Why suspicious:** npm uses SHA-512 integrity hashes to verify downloaded tarballs match what was published. Missing or weak integrity hashes mean npm can't verify the tarball hasn't been tampered with. A lockfile with missing integrity was either generated by very old tooling or deliberately stripped.
+**pnpm-lock.yaml — missing integrity:** every package block under `packages:` should have `resolution: {integrity: sha512-...}` (registry default) or both `tarball:` and `integrity:` keys (non-default). A `resolution:` block with neither integrity field is a hit:
+```
+resolution:\s*\{(?![^}]*integrity)[^}]*\}
+```
 
-**False positives:** npm v5 lockfiles (lockfileVersion 1) may use sha1. Old projects that haven't regenerated their lockfile. Check `lockfileVersion`.
+**pnpm weak hash:**
+```
+integrity:\s*(sha1-|md5-)
+```
+
+**Why suspicious:** npm/pnpm/yarn use SHA-512 integrity hashes to verify downloaded tarballs match what was published. Missing or weak integrity hashes mean the package manager can't verify the tarball hasn't been tampered with. A lockfile with missing integrity was either generated by very old tooling or deliberately stripped.
+
+**False positives:** npm v5 lockfiles (lockfileVersion 1) may use sha1. pnpm `link:` / `file:` / `workspace:` resolutions correctly omit integrity (local sources). Old projects that haven't regenerated their lockfile. Check `lockfileVersion` and the resolution `type` before flagging.
 
 ---
 

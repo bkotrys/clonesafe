@@ -96,6 +96,10 @@ curl -sfL "$BASE/.gitattributes" -o "$SCAN_DIR/.gitattributes" 2>/dev/null
 curl -sfL "$BASE/.gitmodules" -o "$SCAN_DIR/.gitmodules" 2>/dev/null
 curl -sfL "$BASE/package-lock.json" -o "$SCAN_DIR/package-lock.json" 2>/dev/null
 curl -sfL "$BASE/yarn.lock" -o "$SCAN_DIR/yarn.lock" 2>/dev/null
+curl -sfL "$BASE/pnpm-lock.yaml" -o "$SCAN_DIR/pnpm-lock.yaml" 2>/dev/null
+curl -sfL "$BASE/bun.lock" -o "$SCAN_DIR/bun.lock" 2>/dev/null
+# bun.lockb is binary — record HTTP status only (cannot grep binary)
+BUN_LOCKB_STATUS=$(curl -sILo /dev/null -w '%{http_code}' "$BASE/bun.lockb" 2>/dev/null)
 
 # Discover entry points from package.json and fetch them
 if [ -f "$SCAN_DIR/package.json" ]; then
@@ -272,33 +276,72 @@ echo "D12_GITMODULES_INJECTION=$D12"
 
 #### Check D13 — Lockfile non-registry resolved URLs
 
+Covers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, and `bun.lock` (text). Each lockfile format encodes the resolved tarball URL differently, so each gets its own pattern. Only `registry.npmjs.org` and `registry.yarnpkg.com` are treated as default — anything else counts.
+
 ```bash
 D13=0
-for lf in "$SCAN_DIR/package-lock.json" "$SCAN_DIR/yarn.lock"; do
+
+# IMPORTANT: do not use `grep -c ... || echo 0` — `grep -c` already prints the count
+# (and returns exit code 1 when 0 matches), so `|| echo 0` would double-emit "0\n0"
+# and break the `$(( ... ))` arithmetic. Just trust grep -c's output.
+
+# package-lock.json (npm v2/v3) and bun.lock (npm-compatible "resolved" key)
+for lf in "$SCAN_DIR/package-lock.json" "$SCAN_DIR/bun.lock"; do
   if [ -f "$lf" ]; then
-    COUNT=$(grep -cE '"resolved"\s*:\s*"(?!https://registry\.npmjs\.org/)' "$lf" 2>/dev/null || true)
-    D13=$(( ${D13:-0} + ${COUNT:-0} ))
+    TOTAL=$(grep -cE '"resolved"\s*:\s*"https?://' "$lf" 2>/dev/null); TOTAL=${TOTAL:-0}
+    OK=$(grep -cE '"resolved"\s*:\s*"https?://(registry\.npmjs\.org|registry\.yarnpkg\.com)/' "$lf" 2>/dev/null); OK=${OK:-0}
+    COUNT=$(( TOTAL - OK )); [ "$COUNT" -lt 0 ] && COUNT=0
+    D13=$(( D13 + COUNT ))
   fi
 done
+
+# yarn.lock (different syntax: bare `resolved "URL"`)
+if [ -f "$SCAN_DIR/yarn.lock" ]; then
+  TOTAL=$(grep -cE '^\s*resolved\s+"https?://' "$SCAN_DIR/yarn.lock" 2>/dev/null); TOTAL=${TOTAL:-0}
+  OK=$(grep -cE '^\s*resolved\s+"https?://(registry\.npmjs\.org|registry\.yarnpkg\.com)/' "$SCAN_DIR/yarn.lock" 2>/dev/null); OK=${OK:-0}
+  COUNT=$(( TOTAL - OK )); [ "$COUNT" -lt 0 ] && COUNT=0
+  D13=$(( D13 + COUNT ))
+fi
+
+# pnpm-lock.yaml (pnpm v6+: `resolution: {tarball: <url>, ...}` or, multi-line, a `tarball: <url>` key)
+# pnpm only emits an explicit `tarball:` when the URL deviates from the registry default,
+# so any tarball: line that isn't an npm/yarn registry URL is suspicious.
+if [ -f "$SCAN_DIR/pnpm-lock.yaml" ]; then
+  TOTAL=$(grep -cE '(^|[{,[:space:]])tarball:[[:space:]]*https?://' "$SCAN_DIR/pnpm-lock.yaml" 2>/dev/null); TOTAL=${TOTAL:-0}
+  OK=$(grep -cE '(^|[{,[:space:]])tarball:[[:space:]]*https?://(registry\.npmjs\.org|registry\.yarnpkg\.com)/' "$SCAN_DIR/pnpm-lock.yaml" 2>/dev/null); OK=${OK:-0}
+  COUNT=$(( TOTAL - OK )); [ "$COUNT" -lt 0 ] && COUNT=0
+  D13=$(( D13 + COUNT ))
+fi
+
 echo "D13_LOCKFILE_NONREGISTRY=$D13"
 ```
 
-**If D13 > 0: verdict floor = WARN.** (BLOCK if URL matches IOC domain.) Non-registry resolved URLs in lockfiles can redirect `npm install` to attacker tarballs.
+**If D13 > 0: verdict floor = WARN.** (BLOCK if URL matches IOC domain.) Non-registry resolved URLs in lockfiles can redirect installs to attacker tarballs. Note: legitimate cases exist (private registries, packages distributed only via vendor CDNs like `cdn.sheetjs.com` for `xlsx`, GitHub-hosted libraries like `wa-sqlite` pinned to a commit SHA via `codeload.github.com`). The WARN floor exists so these still surface for review even when benign.
 
 #### Check D14 — Lockfile `git+ssh://` URLs
 
 ```bash
 D14=0
-for lf in "$SCAN_DIR/package-lock.json" "$SCAN_DIR/yarn.lock"; do
+for lf in "$SCAN_DIR/package-lock.json" "$SCAN_DIR/yarn.lock" "$SCAN_DIR/pnpm-lock.yaml" "$SCAN_DIR/bun.lock"; do
   if [ -f "$lf" ]; then
-    COUNT=$(grep -c 'git+ssh://' "$lf" 2>/dev/null || true)
-    D14=$(( ${D14:-0} + ${COUNT:-0} ))
+    COUNT=$(grep -c 'git+ssh://' "$lf" 2>/dev/null); COUNT=${COUNT:-0}
+    D14=$(( D14 + COUNT ))
   fi
 done
 echo "D14_LOCKFILE_GITSSH=$D14"
 ```
 
 **If D14 > 0: verdict floor = BLOCK.** `git+ssh://` dependencies bypass the npm registry entirely.
+
+#### Check D14b — `bun.lockb` (binary lockfile) presence
+
+```bash
+D14B=0
+[ "$BUN_LOCKB_STATUS" = "200" ] && D14B=1
+echo "D14B_BUN_LOCKB=$D14B"
+```
+
+**If D14b > 0: informational only.** `bun.lockb` is a binary lockfile that clonesafe cannot grep. The repo also typically ships a text `bun.lock`; if only `bun.lockb` is present, note in the report that lockfile-level checks are skipped for that file. No verdict floor.
 
 #### Check D15 — Dependencies matching IOC packages
 
@@ -383,6 +426,7 @@ echo "D11 gitattributes filter RCE:  $D11"
 echo "D12 gitmodules injection:      $D12"
 echo "D13 Lockfile non-registry URL: $D13"
 echo "D14 Lockfile git+ssh URL:      $D14"
+echo "D14b bun.lockb (binary) seen:  ${D14B:-0}"
 echo "D15 IOC package match:         $D15"
 echo "D16 Typosquat candidate:       $D16"
 echo "========================================="
@@ -500,10 +544,11 @@ GET https://api.github.com/repos/{owner}/{repo}/contents/?ref={ref}
 
 **Always fetch these files via raw.githubusercontent.com if present:**
 - `package.json` — top-level AND any `*/package.json` in subdirectories (client/, server/, backend/, frontend/, app/, src/, etc.)
-- `package-lock.json`
-- `yarn.lock`
-- `pnpm-lock.yaml`
-- `bun.lockb`
+- `package-lock.json` (npm)
+- `yarn.lock` (Yarn v1)
+- `pnpm-lock.yaml` (pnpm v6+)
+- `bun.lock` (Bun text format) — fetch and grep
+- `bun.lockb` (Bun binary format) — fetch headers only to flag presence; cannot grep
 - `README.md` (and other README variants: `README`, `readme.md`, `README.txt`)
 - `.gitignore`
 - `.gitattributes` (CVE risk, submodule tricks)
@@ -541,7 +586,7 @@ This wrapping is an internal reminder to yourself. You do not need to literally 
 For each fetched file, apply the relevant detector rules from `detectors/`:
 
 - **`package.json`** → `detectors/lifecycle-scripts.md`, `detectors/dep-confusion.md`
-- **Lockfiles (`package-lock.json`, `yarn.lock`)** → `detectors/lockfile-anomalies.md`
+- **Lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`)** → `detectors/lockfile-anomalies.md`. `bun.lockb` (binary): note presence only; LF rules cannot apply.
 - **Any `.js` / `.ts` / `.mjs` / `.cjs` file** → `detectors/obfuscation.md`, `detectors/exfil-patterns.md`, `detectors/recon-patterns.md`, `detectors/prompt-injection.md`
 - **`README.md`, `*.md`, `*.txt`** → `detectors/prompt-injection.md` (primary concern for natural-language injection)
 - **Repo metadata** (description, topics, homepage) → `detectors/prompt-injection.md`, `detectors/repo-metadata.md`
