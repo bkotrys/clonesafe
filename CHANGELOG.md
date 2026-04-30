@@ -7,6 +7,14 @@ and clonesafe adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added — pnpm + bun lockfile coverage
+- D13 (non-registry resolved URL) and D14 (git+ssh dependency) now scan `pnpm-lock.yaml` (pnpm v6+ schema with `resolution: {tarball: …}`) and `bun.lock` (text format) in addition to `package-lock.json` and `yarn.lock`.
+- New informational check D14b: probes `bun.lockb` (binary) via HTTP HEAD and flags presence; binary content remains unscannable so no verdict floor is raised.
+- `cli/lib/github.js` now fetches `pnpm-lock.yaml` and `bun.lock` as core lockfile paths.
+- `cli/lib/checks.js` D13 ports the pnpm `tarball:` regex; lockfile collection in `runAllChecks` includes the new formats.
+- `detectors/lockfile-anomalies.md` LF-001/LF-002/LF-003 documented per-format with a coverage matrix (npm/yarn/pnpm/bun.lock supported; `bun.lockb` flag-only). False-positive list expanded with `codeload.github.com` (commit-pinned GitHub tarballs) and `cdn.sheetjs.com` (xlsx canonical distribution post-2023 npm exit) — both still surface as WARN by design.
+- Fixed a latent `grep -c … || echo 0` pattern in the Phase 0 spec that would have double-emitted `0\n0` and broken arithmetic when run with the new lockfile loop.
+
 ### Added — Phase 1.5: New Detectors + IOC Expansion
 - `detectors/git-level.md` — 7 rules (GL-001..GL-007) for `.gitattributes` smudge/clean filter RCE, submodule URL injection, path traversal, suspicious binaries, custom merge drivers
 - `detectors/lockfile-anomalies.md` — 6 rules (LF-001..LF-006) for non-registry resolved URLs, `git+ssh://` deps, missing integrity hashes, IOC version cross-ref, suspicious tarball domains

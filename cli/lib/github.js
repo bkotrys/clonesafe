@@ -89,7 +89,8 @@ async function fetchAllFiles(owner, repo, ref) {
   const corePaths = [
     'package.json', 'README.md', 'server.js', 'index.js',
     '.gitattributes', '.gitmodules',
-    'package-lock.json', 'yarn.lock'
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock'
+    // bun.lockb (binary) is intentionally skipped — clonesafe cannot grep binary lockfiles.
   ];
 
   // Suspicious paths to probe
