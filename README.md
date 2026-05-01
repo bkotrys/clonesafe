@@ -12,21 +12,20 @@
 
 ## Why this exists
 
-A developer receives a take-home coding challenge from what looks like a legitimate recruiter. The repo is professional — clean structure, realistic dependencies, a README with screenshots, a small product demo. Nothing unusual.
+Supply-chain attacks targeting developer machines have moved beyond typosquatting public packages and now routinely weaponize **arbitrary GitHub repositories** — fake recruiter take-homes, doctored open-source forks, and time-bombed dependencies in custom repos. A malicious lifecycle hook needs only seconds after `npm install` to exfiltrate environment variables and credentials, harvest crypto wallets and SSH keys, or stage a long-running backdoor.
 
-They run `npm install`. Within minutes, a malicious background Node process exfiltrates their environment variables and starts stage-2 remote code execution against a serverless endpoint. The attack is caught, the process is killed, and hours of incident response follow.
+These campaigns are tracked publicly across the security industry:
 
-This is not a one-off incident. It's a **documented, multi-year, state-sponsored campaign** tracked publicly as:
-- [**Contagious Interview**](https://unit42.paloaltonetworks.com/) (Unit 42 / Palo Alto Networks)
-- [**DEV#POPPER**](https://www.securonix.com/blog/) (Securonix)
-- [**DeceptiveDevelopment**](https://www.welivesecurity.com/) (ESET)
+- [**Contagious Interview**](https://unit42.paloaltonetworks.com/) — Unit 42 / Palo Alto Networks
+- [**DEV#POPPER**](https://www.securonix.com/blog/) — Securonix
+- [**DeceptiveDevelopment**](https://www.welivesecurity.com/) — ESET
 
-Thousands of developers are targeted every month — especially in Web3, crypto, AI, and DeFi. The repos look real. The recruiters look real. The only thing that stops you is scanning the code **before** you run it.
+Existing supply-chain tooling — `npm audit`, Snyk, Socket — operates *after* install, on *published* registry packages. clonesafe is built for the pre-clone gap: deterministic static analysis of any GitHub repository, plus an optional containerized dynamic analysis of the install itself, before the target's code touches your disk.
 
-**No tool existed to do that. So we built one.**
+**Designed for**: security teams vetting third-party code, engineering leaders triaging vendor and contractor repos, individual developers receiving unsolicited take-homes, and CI pipelines guarding the lockfile boundary.
 
-📖 **Full technical analysis:** [`samples/contagious-interview-001/`](samples/contagious-interview-001/)
-📖 **If you've already been hit:** [`playbooks/i-just-ran-it.md`](playbooks/i-just-ran-it.md)
+📖 **Technical case study:** [`samples/contagious-interview-001/`](samples/contagious-interview-001/) &nbsp;&nbsp;
+📖 **Incident response:** [`playbooks/i-just-ran-it.md`](playbooks/i-just-ran-it.md)
 
 ---
 
