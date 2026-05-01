@@ -1,0 +1,5 @@
+{
+  "name": "env-exfil-fixture",
+  "version": "1.0.0",
+  "main": "loader.js"
+}

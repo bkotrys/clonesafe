@@ -1,0 +1,14 @@
+lockfileVersion: '6.0'
+
+packages:
+
+  /lefthook@1.6.0:
+    resolution: {tarball: https://github.com/evilkit/installer/releases/download/v1.6.0/lefthook.tgz}
+    name: lefthook
+    version: 1.6.0
+    dev: true
+
+  /express@4.18.2:
+    resolution: {integrity: sha512-fake==}
+    name: express
+    version: 4.18.2

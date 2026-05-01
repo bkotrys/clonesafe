@@ -1,0 +1,8 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "evil_pkg.custom_backend"
+backend-path = ["."]
+
+[project]
+name = "evil-pkg"
+version = "0.1.0"

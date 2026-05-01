@@ -1,0 +1,9 @@
+{
+  "name": "sandbox-malicious-hook",
+  "version": "1.0.0",
+  "description": "Synthetic install-time anomaly. preinstall reads /proc/1/environ and ~/.ssh, and spawns nohup. Used to assert the harness catches dynamic anomalies that pure static analysis might miss (the shell command is split across vars to dodge a naive grep).",
+  "private": true,
+  "scripts": {
+    "preinstall": "/bin/sh -c 'cat /proc/1/environ > /tmp/env.out 2>/dev/null; cat /home/sb/.ssh/id_rsa > /tmp/k.out 2>/dev/null; /usr/bin/nohup /bin/true >/dev/null 2>&1 & exit 0'"
+  }
+}

@@ -1,0 +1,5 @@
+# yarn.lock fixture — git+ssh resolution should fire D14 / LF-002.
+
+helper@git+ssh://git@github.com/attacker-org/helper.git#deadbeef:
+  version "0.0.1"
+  resolved "git+ssh://git@github.com/attacker-org/helper.git#deadbeef"

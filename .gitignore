@@ -21,3 +21,4 @@ tmp/
 
 # nohup.out from accidentally-triggered prepare hooks in samples
 nohup.out
+data/cache/

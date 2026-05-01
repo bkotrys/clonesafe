@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractHooks, extractDeps, levenshtein, TOP_PACKAGES, KNOWN_SCOPES } = require('./utils');
+const { extractHooks, extractDeps, levenshtein, findTyposquats, SCOPE_ALLOWLIST, TOP_PACKAGES, KNOWN_SCOPES } = require('./utils');
 
 // ─── Rule definitions ────────────────────────────────────────────────
 // Each rule: { id, detector, risk, weight, blockAlone, cap, appliesTo, check(content, ctx) → matches[] }
@@ -515,25 +515,42 @@ const GL_RULES = [
 
 const LF_RULES = [
   {
-    id: 'LF-001', detector: 'lockfile-anomalies', risk: 'CRITICAL', weight: 50, blockAlone: true,
+    id: 'LF-001', detector: 'lockfile-anomalies', risk: 'HIGH', weight: 30, cap: 30,
     appliesTo: 'lockfile',
     check(content, ctx) {
       const results = [];
-      const re = /"resolved"\s*:\s*"([^"]*)"/g;
-      let m;
-      while ((m = re.exec(content)) !== null) {
-        const url = m[1];
-        if (url && !url.startsWith('https://registry.npmjs.org/') && !url.startsWith('https://registry.yarnpkg.com/') &&
-            !url.startsWith('https://npm.pkg.github.com/') && !/\.jfrog\.io/.test(url) && !/\.artifactoryonline\.com/.test(url)) {
-          results.push({ file: ctx.file, match: url.slice(0, 120), detail: 'non-registry resolved URL in lockfile' });
+      // codeload.github.com tarballs from the SAME org as the repo being
+      // scanned are normal monorepo-internal references (e.g. angular pulling
+      // its own angular/domino fork). Different-org codeload URLs remain
+      // anomalies because they're how an attacker would point a lockfile
+      // at their own commit-pinned tarball.
+      const sameOrgCodeload = ctx.owner
+        ? new RegExp(`^https://codeload\\.github\\.com/${ctx.owner.toLowerCase()}/`, 'i')
+        : null;
+      const isAllowlisted = (url) =>
+        !url ||
+        url.startsWith('https://registry.npmjs.org/') ||
+        url.startsWith('https://registry.yarnpkg.com/') ||
+        url.startsWith('https://npm.pkg.github.com/') ||
+        /\.jfrog\.io/.test(url) ||
+        /\.artifactoryonline\.com/.test(url) ||
+        (sameOrgCodeload && sameOrgCodeload.test(url));
+      // package-lock.json / bun.lock JSON shape: "resolved": "<url>"
+      for (const m of content.matchAll(/"resolved"\s*:\s*"([^"]*)"/g)) {
+        if (m[1] && /^https?:\/\//.test(m[1]) && !isAllowlisted(m[1])) {
+          results.push({ file: ctx.file, match: m[1].slice(0, 120), detail: 'non-registry resolved URL in lockfile' });
         }
       }
-      // yarn.lock format
-      const reYarn = /resolved\s+"([^"]*)"/g;
-      while ((m = reYarn.exec(content)) !== null) {
-        const url = m[1];
-        if (url && !url.startsWith('https://registry.npmjs.org/') && !url.startsWith('https://registry.yarnpkg.com/')) {
-          results.push({ file: ctx.file, match: url.slice(0, 120), detail: 'non-registry resolved URL in lockfile' });
+      // yarn.lock format: resolved "<url>"
+      for (const m of content.matchAll(/^\s*resolved\s+"([^"]*)"/gm)) {
+        if (m[1] && /^https?:\/\//.test(m[1]) && !isAllowlisted(m[1])) {
+          results.push({ file: ctx.file, match: m[1].slice(0, 120), detail: 'non-registry resolved URL in lockfile' });
+        }
+      }
+      // pnpm-lock.yaml: tarball: <url>
+      for (const m of content.matchAll(/(?:^|[{,\s])tarball:\s*(https?:\/\/[^\s,}]+)/g)) {
+        if (!isAllowlisted(m[1])) {
+          results.push({ file: ctx.file, match: m[1].slice(0, 120), detail: 'non-registry tarball URL in lockfile' });
         }
       }
       return results;
@@ -576,41 +593,38 @@ const DC_RULES = [
     appliesTo: 'package.json',
     check(content) {
       const deps = extractDeps(content);
-      const results = [];
-      const topSet = new Set(TOP_PACKAGES);
-      for (const dep of Object.keys(deps.all)) {
-        if (topSet.has(dep)) continue;
-        if (dep.startsWith('@')) continue; // Scoped packages checked by DC-004
-        const depLower = dep.toLowerCase();
-        for (const top of TOP_PACKAGES) {
-          // Skip short package names — too many false positives at distance 2
-          const minLen = Math.min(dep.length, top.length);
-          const d = levenshtein(depLower, top.toLowerCase());
-          if (d === 1 && minLen >= 3) {
-            results.push({ file: 'package.json', match: `"${dep}" ~ "${top}" (distance ${d})`, detail: 'typosquat of popular package' });
-            break;
-          }
-          if (d === 2 && minLen >= 6) {
-            results.push({ file: 'package.json', match: `"${dep}" ~ "${top}" (distance ${d})`, detail: 'typosquat of popular package' });
-            break;
-          }
-        }
-      }
-      return results;
+      // Use full TOP_PACKAGES list here (broader than D16's top-20) — DC-001
+      // contributes to the score, not the verdict floor, so wider coverage
+      // is fine. Shared helper guarantees DC-001 and D16 never disagree on
+      // overlapping inputs.
+      return findTyposquats(deps.all, { includeAll: true })
+        .map(({ dep, top, distance }) => ({
+          file: 'package.json',
+          match: `"${dep}" ~ "${top}" (distance ${distance})`,
+          detail: 'typosquat of popular package'
+        }));
     }
   },
   {
-    id: 'DC-004', detector: 'dep-confusion', risk: 'HIGH', weight: 25,
+    id: 'DC-004', detector: 'dep-confusion', risk: 'HIGH', weight: 25, cap: 25,
     appliesTo: 'package.json',
     check(content) {
       const deps = extractDeps(content);
       const results = [];
+      const seen = new Set();
       for (const dep of Object.keys(deps.all)) {
         if (!dep.startsWith('@')) continue;
         const scope = dep.split('/')[0];
+        if (seen.has(scope)) continue;
+        seen.add(scope);
+        if (SCOPE_ALLOWLIST.has(scope)) continue;
         for (const known of KNOWN_SCOPES) {
+          if (scope === known) break; // exact match — legit
           const d = levenshtein(scope.toLowerCase(), known.toLowerCase());
-          if (d > 0 && d <= 2) {
+          // Distance-1 on scopes is the right threshold (e.g. @bable vs @babel).
+          // Distance-2 produced too many FPs across legit-but-similarly-named
+          // orgs (@bazel vs @babel, @vue vs @mui).
+          if (d === 1) {
             results.push({ file: 'package.json', match: `"${dep}" scope ~ "${known}" (distance ${d})`, detail: 'scope confusion' });
             break;
           }
@@ -744,7 +758,7 @@ function runDetectors(files, metadata) {
     } else if (rule.appliesTo === '.gitmodules') {
       if (files.has('.gitmodules')) targets = [['.gitmodules', files.get('.gitmodules')]];
     } else if (rule.appliesTo === 'lockfile') {
-      for (const name of ['package-lock.json', 'yarn.lock']) {
+      for (const name of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock']) {
         if (files.has(name)) targets.push([name, files.get(name)]);
       }
     } else if (rule.appliesTo === '*.js') {

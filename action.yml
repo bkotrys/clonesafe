@@ -1,0 +1,117 @@
+name: 'clonesafe'
+description: 'Pre-clone GitHub repo scanner. Catches malicious lifecycle hooks, IOC matches, and supply chain threats before code lands in your tree.'
+author: 'bkotrys'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  url:
+    description: 'GitHub repo URL or owner/repo to scan. Defaults to the current PR head repo when run on pull_request.'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Verdict that should fail the job. One of PROCEED|CAUTION|WARN|BLOCK. Default WARN.'
+    required: false
+    default: 'WARN'
+  sandbox:
+    description: 'Run npm install inside a locked-down Docker container and fold runtime anomalies into the verdict (true/false).'
+    required: false
+    default: 'false'
+  github-token:
+    description: 'GitHub token for raised rate limits. Default is the action runner token.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: 'PROCEED | CAUTION | WARN | BLOCK'
+    value: ${{ steps.scan.outputs.verdict }}
+  score:
+    description: 'Numeric risk score'
+    value: ${{ steps.scan.outputs.score }}
+  report:
+    description: 'Path to the JSON report on the runner'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Resolve target URL
+      id: resolve
+      shell: bash
+      env:
+        # SECURITY: every attacker-controllable value flows through env, not
+        # ${{ … }} string substitution. ${{ … }} is interpolated BEFORE bash
+        # sees the script — an attacker who controls a fork PR's repo name or
+        # branch ref could inject shell metacharacters. Going through env
+        # means the values are real shell variables and the script can quote
+        # them safely with "$VAR".
+        INPUT_URL: ${{ inputs.url }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        DEFAULT_REPO: ${{ github.repository }}
+        DEFAULT_SHA: ${{ github.sha }}
+      run: |
+        # Validate the resolved target matches `owner/repo[@ref]` and contains
+        # nothing else. If validation fails we abort rather than pass an
+        # attacker-influenced string to npx.
+        if [ -n "$INPUT_URL" ]; then
+          target="$INPUT_URL"
+        elif [ "$EVENT_NAME" = "pull_request" ]; then
+          target="${PR_HEAD_REPO}@${PR_HEAD_SHA}"
+        else
+          target="${DEFAULT_REPO}@${DEFAULT_SHA}"
+        fi
+        # Allowed shape: https-URL OR owner/repo[@ref]; ref is sha-or-branch.
+        # No spaces, no shell metas, no semicolons.
+        if ! printf '%s' "$target" | grep -qE '^(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(@[A-Za-z0-9_./-]+)?|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(@[A-Za-z0-9_./-]+)?)$'; then
+          echo "::error::clonesafe: refusing to scan target with unsafe characters: $target" >&2
+          exit 2
+        fi
+        printf 'target=%s\n' "$target" >> "$GITHUB_OUTPUT"
+    - name: Run clonesafe
+      id: scan
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TARGET: ${{ steps.resolve.outputs.target }}
+        SANDBOX: ${{ inputs.sandbox }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        report=$(mktemp)
+        printf 'report=%s\n' "$report" >> "$GITHUB_OUTPUT"
+        sandbox_flag=()
+        if [ "$SANDBOX" = "true" ]; then sandbox_flag=(--sandbox); fi
+        # `--` separates clonesafe args from npx flags; "$TARGET" is quoted.
+        # Pinning to a major version is preferable to @latest but until 0.3 is
+        # published we ship the user-side action.yml as a templating shim.
+        npx -y --package=clonesafe@latest -- clonesafe "$TARGET" "${sandbox_flag[@]}" --json --no-color > "$report" || true
+        verdict=$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).verdict||"")}catch(e){console.log("")}' "$report")
+        score=$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).score||"")}catch(e){console.log("")}' "$report")
+        printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
+        printf 'score=%s\n' "$score" >> "$GITHUB_OUTPUT"
+        {
+          printf '## clonesafe verdict: %s (score %s)\n' "$verdict" "$score"
+          printf '```json\n'
+          # Cap output to first 200 lines so a giant report can't break the
+          # surface UI. Use sed to strip backticks anywhere they appear in
+          # the JSON since they would close the fenced code block.
+          head -200 "$report" | sed 's/`/`\xE2\x80\x8B/g'
+          printf '\n```\n'
+        } >> "$GITHUB_STEP_SUMMARY"
+        # Fail-on logic. Both verdict and threshold are checked against the
+        # known set; anything unrecognized refuses to make a determination.
+        case "$verdict" in PROCEED|CAUTION|WARN|BLOCK) ;; *) echo "::error::could not parse clonesafe verdict from report"; exit 2 ;; esac
+        case "$FAIL_ON" in PROCEED|CAUTION|WARN|BLOCK) ;; *) echo "::error::invalid fail-on threshold: $FAIL_ON"; exit 2 ;; esac
+        order=' PROCEED CAUTION WARN BLOCK '
+        before_v="${order%% $verdict *}"
+        before_t="${order%% $FAIL_ON *}"
+        if [ "${#before_v}" -ge "${#before_t}" ]; then
+          echo "::error::clonesafe verdict $verdict meets/exceeds fail-on threshold $FAIL_ON"
+          exit 1
+        fi

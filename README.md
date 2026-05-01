@@ -12,9 +12,9 @@
 
 ## Why this exists
 
-In April 2026, a developer received a take-home coding challenge from what appeared to be a legitimate recruiter. The repo looked professional — clean structure, realistic dependencies (axios, express, mongoose, ethers, socket.io, pokersolver), a README with screenshots. A small Web3 Texas Hold'em game. Nothing unusual.
+A developer receives a take-home coding challenge from what looks like a legitimate recruiter. The repo is professional — clean structure, realistic dependencies, a README with screenshots, a small product demo. Nothing unusual.
 
-They ran `npm install`. Within ten minutes, a malicious background Node process had exfiltrated their environment variables and was running stage-2 remote code execution against a `*.vercel.app` endpoint. The attack was caught, the process was killed, and 8 hours of incident response followed.
+They run `npm install`. Within minutes, a malicious background Node process exfiltrates their environment variables and starts stage-2 remote code execution against a serverless endpoint. The attack is caught, the process is killed, and hours of incident response follow.
 
 This is not a one-off incident. It's a **documented, multi-year, state-sponsored campaign** tracked publicly as:
 - [**Contagious Interview**](https://unit42.paloaltonetworks.com/) (Unit 42 / Palo Alto Networks)
@@ -36,13 +36,17 @@ clonesafe is a [Claude Code](https://claude.com/claude-code) project.
 
 ### Prerequisites
 
-- **[Claude Code](https://claude.com/claude-code)** — the runtime that executes clonesafe's skill files
-- **python3** — used by Phase 0 deterministic checks to parse JSON (comes pre-installed on macOS and most Linux distros)
-- **curl** — used to fetch files from `raw.githubusercontent.com` (pre-installed on macOS/Linux)
-- **grep** — used by Phase 0 deterministic pattern matching (pre-installed on macOS/Linux)
+clonesafe ships in two flavors. Pick whichever fits your workflow:
 
-Optional (improves experience but not required):
-- **jq** — if installed, some checks run faster. Install via `brew install jq` (macOS) or `apt install jq` (Debian/Ubuntu)
+**Standalone CLI (`npx clonesafe`)** — zero-dependency Node.js CLI
+- **Node.js ≥ 18** — that's it. No `npm install`, no native deps.
+- Optional: **Docker** — only required for `--sandbox` mode (opt-in dynamic install analysis)
+- Optional: **GITHUB_TOKEN** env var to lift the GitHub API rate limit from 60 to 5,000/hr
+
+**Claude Code workflow** — richer LLM-assisted analysis via `/vet-repo`
+- **[Claude Code](https://claude.com/claude-code)** — the runtime that executes clonesafe's skill files
+- **python3**, **curl**, **grep** — used by `scripts/phase0.sh` for deterministic checks (pre-installed on macOS/Linux)
+- Optional: **jq** — if installed, some Phase 0 steps run faster
 
 ### Install and run
 
@@ -115,9 +119,27 @@ Options:
 - `--json` — structured JSON output (pipe to `jq` or parse programmatically)
 - `--quiet` — no output, exit code only (0 = safe, 1 = block/warn)
 - `--no-color` — disable ANSI colors
-- `GITHUB_TOKEN` env var — increases GitHub API rate limit from 60 to 5,000 requests/hour
+- `--sandbox` — opt-in: download the tarball, extract it inside a locked-down Docker container, run `npm install` under `strace`, fold runtime anomalies into the verdict. Requires Docker.
+- `--provenance` — query the npm registry for each direct dep and flag publisher-token-hijack signals (a previously-attested package whose newer version from the same publisher dropped attestations).
+- `--diff` — differential scan: cache finding fingerprints in `data/cache/` and surface only new/removed findings on rescan.
+- `GITHUB_TOKEN` env var — increases GitHub API rate limit from 60 to 5,000 requests/hour. If unset, clonesafe falls back to `gh auth token` once per run.
 
-The CLI runs the same D1-D16 deterministic checks and all 70+ detector rules as the Claude Code workflow, but without the LLM-assisted Phase A reasoning. It's faster and fully deterministic — ideal for CI pipelines, pre-commit hooks, and automated scanning.
+The CLI runs the same D1-D23 deterministic checks and all 70+ detector rules as the Claude Code workflow, but without the LLM-assisted Phase A reasoning. It's faster and fully deterministic — ideal for CI pipelines, pre-commit hooks, and automated scanning.
+
+### GitHub Action
+
+`action.yml` ships at the repo root as a composite action. Drop it into a workflow:
+
+```yaml
+- uses: bkotrys/clonesafe@v0.3.0
+  with:
+    url: ${{ github.event.pull_request.head.repo.full_name }}@${{ github.event.pull_request.head.sha }}
+    fail-on: WARN          # PROCEED | CAUTION | WARN | BLOCK
+    sandbox: 'false'       # set 'true' to also run the install harness
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The action posts the verdict and JSON report to the PR step summary and fails the job when the verdict meets or exceeds `fail-on`. With no `url` input on a `pull_request` event it scans the PR head repo at the head SHA. A complementary `scripts/pre-commit.sh` re-vets any new GitHub URL added to staged lockfiles before the commit lands.
 
 ---
 
@@ -127,23 +149,30 @@ The CLI runs the same D1-D16 deterministic checks and all 70+ detector rules as 
 - **Lifecycle script abuse**: `prepare`/`postinstall`/`preinstall`/`install` scripts that launch servers, background-daemonize (`nohup`, `&`, `start /b`), mix Windows/Unix syntax, or make network calls.
 - **Base64 + dynamic execution**: `Buffer.from(X, 'base64').toString()` piped into `new Function(...)` or `eval(...)`.
 - **Environment exfiltration**: `axios.post` / `fetch` / `got` with `process.env` as the body.
-- **Known-bad dependencies**: packages matching the clonesafe IOC database (axios 1.14.1, plain-crypto-js 4.2.x, etc.).
+- **Known-bad dependencies — direct AND transitive**: packages matching the clonesafe IOC database, whether they appear in `package.json` directly (D15) or buried inside `package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` / `bun.lock` (D15b).
 - **Known-bad GitHub orgs**: orgs tagged in `iocs/github-orgs.json` as campaign infrastructure.
 - **`.gitattributes` filter RCE**: smudge/clean filters that execute commands on `git checkout` (CVE-2024-32002).
 - **Submodule injection**: `.gitmodules` with `ext::`, `file://`, shell metacharacters, or path traversal.
-- **Lockfile manipulation**: non-registry resolved URLs, `git+ssh://` deps redirecting `npm install` to attacker tarballs.
+- **Lockfile manipulation**: non-registry resolved URLs, `git+ssh://` deps redirecting installs to attacker tarballs. Covers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, and `bun.lock` (text). Binary `bun.lockb` is flagged on presence (D14b) but cannot be grepped.
+- **Multi-ecosystem install-time shell-out**: Python `setup.py` / `pyproject.toml` (D17/D18), Rust `build.rs` (D19), Ruby `Gemfile` and `extconf.rb` (D21), PHP `composer.json` install hooks (D22).
+- **npm provenance downgrade** (`--provenance`): a published version had SLSA attestations and a newer one from the same publisher does not — a publisher-token-hijack signal (PROV-DOWNGRADE).
 
 ### 🟠 Strong warnings (raise score)
 - **Obfuscation signatures**: javascript-obfuscator output (`_0x[a-f0-9]+` names), reversed/shuffled string arrays, hex-encoded identifiers.
 - **OS-specific exfil paths**: references to `~/.ssh`, `~/Library/Application Support/Google/Chrome`, wallet extension IDs, MetaMask/Phantom paths, Local Extension Settings.
 - **Dynamic execution primitives**: `new Function`, `eval`, `vm.runInNewContext`, `child_process.exec` with non-literal strings.
 - **Repo metadata red flags**: org/repo created <30 days, 0-1 contributors, single squashed commit, missing LICENSE/.gitignore, suspiciously thin history vs. claimed product maturity.
+- **Repo-history anomalies**: high force-push rate on the default branch via the GitHub Activity API (GH-FORCE-PUSH; tiered MEDIUM at 3+ events / HIGH at 8+ events in the last 30 days).
+- **Known-bad TLDs**: URLs hosted under `.zip` / `.cam` / `.icu` / `.top` / `.click` / `.buzz` / `.work` / `.gq` / `.tk` / `.ml` / `.cf` (D23).
+- **Go `//go:generate` shelling out** to `sh`/`bash`/`curl`/`wget`/`python`/`node`/`eval` (D20).
 
 ### 🟡 Soft signals (scored, surfaced in report)
 - Lockfile anomalies (non-registry URLs, version pins to yanked releases)
 - README claims inconsistent with actual repo state
 - Mixed package managers
 - Dependencies with versions resolved to brand-new packages (<30 days old)
+- npm provenance gap on direct deps (PROV-NONE — informational, weight 0)
+- Low signed-commit ratio on the default branch (GH-UNSIGNED — informational)
 
 **Full rule catalog:** [`detectors/`](detectors/)
 
@@ -151,15 +180,21 @@ The CLI runs the same D1-D16 deterministic checks and all 70+ detector rules as 
 
 ## How it works (no magic)
 
-clonesafe never executes the code it's analyzing. It uses only:
+clonesafe never executes the code it's analyzing by default. The static path uses only:
 
-1. **GitHub REST API** — for repo metadata, org age, contributor count, file listing
+1. **GitHub REST API** — for repo metadata, org age, contributor count, file listing, and force-push activity
 2. **`raw.githubusercontent.com`** — for fetching specific files (package.json, lockfiles, entry points, suspicious paths)
 3. **Static pattern matching** — regex, substring, and AST shape rules from [`detectors/`](detectors/)
 4. **IOC database lookup** — [`iocs/`](iocs/) JSON files for known-bad packages/domains/orgs
 5. **Claude Code's reasoning** — to chain the signals into a coherent verdict, explain the findings in English, and suggest next steps
 
-**No sandbox. No Docker. No VM. No telemetry. No account. No internet calls except to `api.github.com` and `raw.githubusercontent.com`.**
+Three opt-in flags extend that surface:
+
+- **`--provenance`** — additionally calls `https://registry.npmjs.org/{pkg}` for each direct dep to check for SLSA attestation downgrades.
+- **`--sandbox`** — downloads the GitHub tarball as raw compressed bytes, mounts it into a Docker container, and runs `npm install` under `strace` with `--network=none` and full cap-drop. Extraction happens inside the container; the host never sees decompressed source. The static verdict floor cannot be downgraded by sandbox results.
+- **`--diff`** — caches per-repo finding fingerprints in `data/cache/` (gitignored) and surfaces only new/removed findings on rescan.
+
+**No telemetry. No account.** Default-mode network egress is limited to `api.github.com` and `raw.githubusercontent.com`. `--provenance` adds `registry.npmjs.org`; `--sandbox` requires Docker.
 
 Everything runs locally via Claude Code. Your scan history is stored in `data/tracker.tsv` and `data/reports/` — both gitignored.
 
@@ -207,18 +242,19 @@ This is a deliberate architectural choice. A security tool with a dependency tre
 
 Phase 0 deterministic checks have been tested against:
 
-| Repo | Type | Expected | D1-D10 | Floor | Result |
+| Repo | Type | Expected | D-checks | Floor | Result |
 |---|---|---|---|---|---|
 | `expressjs/express` | Known safe, popular | All zeros | All 0 | NONE | ✅ |
 | `facebook/react` | Known safe, popular | All zeros | All 0 | NONE | ✅ |
 | `typicode/husky` | Legit lifecycle hooks | All zeros | All 0 | NONE | ✅ no FP |
 | `puppeteer/puppeteer` | Legit postinstall | All zeros | All 0 | NONE | ✅ no FP |
-| `tokio-rs/tokio` | Rust (no npm) | All zeros | All 0 | NONE | ✅ graceful |
+| `tokio-rs/tokio` | Rust (no npm) | D19 may fire on `build.rs` | depends | varies | ✅ graceful |
+| `n8n-io/n8n` | High-profile pnpm monorepo | D13 fires on private tarballs | D13=2 | WARN | ✅ |
 | Contagious Interview sample | Real attack (defanged) | D1,D2,D3,D5,D6,D7 fire | 6 hits | **BLOCK** | ✅ |
 | Prompt injection bait | Synthetic PI test | D8 fires | D8=12 | **BLOCK** | ✅ |
 | Nonexistent repo | Edge case | No files | All 0 | NONE | ✅ graceful |
 
-**Zero false positives. Zero false negatives. Clean edge case handling.**
+The full set of deterministic checks is now **D1–D23** (lifecycle abuse, base64+exec, env exfil, IOC domains, PI, hidden Unicode, sensitive paths, gitattributes RCE, gitmodules injection, lockfile anomalies, direct + transitive IOC packages, typosquats, Python `setup.py` / `pyproject.toml`, Rust `build.rs`, Go `//go:generate`, Ruby `Gemfile`/`extconf.rb`, PHP `composer.json` install hooks, known-bad TLDs). See [`tests/`](tests/) for the synthetic-fixture suite and [`tests/calibrate.js`](tests/calibrate.js) for the false-positive baseline (14 high-traffic public repos must return PROCEED or CAUTION).
 
 ---
 
@@ -251,7 +287,7 @@ On top of Phase 0:
 - **Any repo a stranger sent you** on Discord/Telegram/LinkedIn/email
 - **Unfamiliar dependencies** — vet a transitive dep before adding it
 - **Your own org's supply chain** — scan every repo an external contractor pushes before you pull it
-- **CI pipelines** — eventually, a GitHub Action wrapper ([roadmap](#roadmap))
+- **CI pipelines** — `action.yml` ships a composite GitHub Action; pair it with `scripts/pre-commit.sh` to also catch new lockfile entries before they land
 - **Bug bounty and security research** — quickly triage suspicious samples reported to you
 
 ---
@@ -263,9 +299,9 @@ On top of Phase 0:
 | **Phase 1: Claude Code workflow** | ✅ shipped | `modes/`, `detectors/`, `iocs/`, case study |
 | **Phase 1.5: New detectors + IOC expansion** | ✅ shipped | `git-level.md`, `lockfile-anomalies.md`, `dep-confusion.md`, D11-D16 checks, IOC database expansion |
 | **Phase 2: Node CLI** | ✅ shipped | `npx clonesafe <url>` — same rules, zero dependencies, no Claude required |
-| **Phase 3: GitHub Action + pre-commit hook** | 📋 planned | CI-time scanning, `baitcheck/scan@v1` |
-| **Phase 4: Sandbox-as-a-service** | 💡 idea | Hosted Docker runner for `npm install` behavioral analysis |
-| **Phase 5: Browser extension** | 💡 idea | Overlay risk badges on GitHub and LinkedIn |
+| **Phase 2.5: Multi-ecosystem + tests + sandbox** | ✅ shipped | D17–D20 (Python `setup.py`/`pyproject.toml`, Rust `build.rs`, Go `//go:generate`), `node:test` fixture suite, opt-in `--sandbox` Docker install harness |
+| **Phase 2.6: Transitive + Ruby/PHP + provenance + CI** | ✅ shipped (0.3.0) | D15b (transitive IOC scan across all four lockfile formats), D21/D22 (Ruby `Gemfile`/`extconf.rb`, PHP `composer.json` install hooks), D23 (known-bad TLDs), GH-FORCE-PUSH via the Activity API, opt-in `--provenance` (npm SLSA attestation downgrade detection), `--diff` differential rescans, `action.yml` GitHub Action, `scripts/pre-commit.sh` lockfile re-vet hook, in-container tarball extraction, `tests/calibrate.js` calibration baseline |
+| **Phase 4: Browser extension** | 💡 idea | Overlay risk badges on GitHub and LinkedIn |
 
 **Related projects in the same family:**
 - [`bkotrys/job-scam-detector`](https://github.com/bkotrys/job-scam-detector) (coming soon) — umbrella tool that uses clonesafe + adds recruiter / company / job spec / document vetting
@@ -295,8 +331,8 @@ clonesafe checks each dependency in `package.json` against its IOC database and 
 **Q: Can this catch a zero-day?**
 Sometimes. clonesafe catches **patterns**, not specific payloads. A new campaign using the same lifecycle-script backgrounding trick as our canonical sample will still trip the rules. A genuinely novel attack vector won't — until someone submits a sample and adds a rule.
 
-**Q: Will clonesafe work for pip/cargo/go packages?**
-Phase 1 is npm-focused because that's where ~95% of the current attack volume lives. Phase 2+ will add Python (`setup.py`, `pyproject.toml`), Rust (`build.rs`), Go (`go.mod` + `go generate`), Ruby (Gemfile + `postinstall`).
+**Q: Will clonesafe work for pip/cargo/go/gem/composer packages?**
+Yes — Phase 2.5 added Python (`setup.py` shell-out and `pyproject.toml` build hooks → D17/D18), Rust (`build.rs` network/process spawn → D19), and Go (`//go:generate` shell-out → D20). Phase 2.6 (0.3.0) adds Ruby (`Gemfile` and `extconf.rb` install-time shell-out → D21) and PHP (`composer.json` `post-install-cmd` / `post-update-cmd` → D22). Coverage is narrower than the npm side because npm still hosts the bulk of observed attack volume; we extend ecosystems as we see real samples. Rakefile and `.gemspec` are deliberately excluded from D21 because they only run on developer invocation, not at install time.
 
 **Q: Why Claude Code and not a standalone CLI?**
 Both are available. Phase 1 uses Claude Code for richer LLM-assisted analysis (cross-file reasoning, explanation generation, interactive follow-up). Phase 2 provides a standalone CLI (`npx clonesafe <url>`) with the same rules for users who don't have Claude Code. The detection logic lives in `detectors/` regardless — the CLI encodes all rules as JavaScript.

@@ -1,0 +1,12 @@
+{
+  "name": "ci-take-home-test",
+  "version": "0.1.0",
+  "description": "Mimics the canonical Contagious Interview lifecycle abuse: prepare hook backgrounds a node loader.",
+  "main": "index.js",
+  "scripts": {
+    "prepare": "start /b node server || nohup node server &"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
