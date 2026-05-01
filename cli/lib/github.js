@@ -1,15 +1,32 @@
 'use strict';
 
+const { spawnSync } = require('node:child_process');
 const VERSION = require('../../package.json').version;
+
+let _ghToken = null;
+let _ghTokenChecked = false;
+function resolveToken() {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  if (_ghTokenChecked) return _ghToken;
+  _ghTokenChecked = true;
+  // Most users have GitHub CLI configured; lift the rate limit transparently
+  // by reading its auth token. We cap the spawn at 1.5s and silence stderr so
+  // a missing/unconfigured `gh` doesn't slow scans.
+  const r = spawnSync('gh', ['auth', 'token'], { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] });
+  if (r.status === 0 && r.stdout) {
+    const tok = r.stdout.trim();
+    if (/^(gh[psu]_|github_pat_)[A-Za-z0-9_]+$/.test(tok)) _ghToken = tok;
+  }
+  return _ghToken;
+}
 
 function headers() {
   const h = {
     'User-Agent': `clonesafe/${VERSION}`,
     'Accept': 'application/vnd.github.v3+json'
   };
-  if (process.env.GITHUB_TOKEN) {
-    h['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
-  }
+  const tok = resolveToken();
+  if (tok) h['Authorization'] = `Bearer ${tok}`;
   return h;
 }
 
@@ -89,15 +106,20 @@ async function fetchAllFiles(owner, repo, ref) {
   const corePaths = [
     'package.json', 'README.md', 'server.js', 'index.js',
     '.gitattributes', '.gitmodules',
-    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock'
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock',
     // bun.lockb (binary) is intentionally skipped — clonesafe cannot grep binary lockfiles.
+    // Multi-ecosystem (D17–D22):
+    'setup.py', 'pyproject.toml', 'build.rs', 'go.mod',
+    'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock'
   ];
 
   // Suspicious paths to probe
   const probePaths = [
     'routes/api/auth.js', 'routes/index.js', 'config/loadEnv.js',
     'config/index.js', 'middleware/index.js', 'src/index.js',
-    'lib/index.js', 'loader.js', 'auth.js'
+    'lib/index.js', 'loader.js', 'auth.js',
+    // Common Go entry points where //go:generate directives live.
+    'main.go', 'gen.go', 'tools.go', 'generate.go'
   ];
 
   const allPaths = [...corePaths, ...probePaths];
@@ -153,6 +175,14 @@ async function fetchAllFiles(owner, repo, ref) {
   return files;
 }
 
+async function downloadTarball(owner, repo, ref, destPath) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/tarball/${ref}`;
+  const res = await fetch(url, { headers: headers(), redirect: 'follow' });
+  if (!res.ok) throw new Error(`tarball fetch failed: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  require('node:fs').writeFileSync(destPath, buf);
+}
+
 module.exports = {
   fetchRepoMeta,
   fetchOwnerMeta,
@@ -161,5 +191,6 @@ module.exports = {
   fetchContents,
   fetchRawFile,
   fetchMultipleRaw,
-  fetchAllFiles
+  fetchAllFiles,
+  downloadTarball
 };

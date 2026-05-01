@@ -1,11 +1,16 @@
 {
   "name": "clonesafe",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Pre-clone GitHub repo scanner. Catches malicious npm packages, supply chain attacks, and Contagious Interview threats before git clone touches your disk.",
   "license": "MIT",
   "author": "Bartosz Kotrys <bkotrys@users.noreply.github.com>",
   "bin": {
     "clonesafe": "./cli/index.js"
+  },
+  "scripts": {
+    "test": "node --test tests/run.js",
+    "test:docker": "node tests/sandbox.js",
+    "calibrate": "node --test tests/calibrate.js"
   },
   "engines": {
     "node": ">=18.0.0"

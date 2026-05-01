@@ -1,0 +1,13 @@
+{
+  "name": "clean-npm-fixture",
+  "version": "1.0.0",
+  "description": "A perfectly normal npm project. Should produce no detections.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"no tests\" && exit 0",
+    "build": "echo building"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}

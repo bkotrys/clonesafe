@@ -107,11 +107,97 @@ const KNOWN_SCOPES = [
   '@heroicons', '@tailwindcss', '@ctrl'
 ];
 
+// Common version-aliased / variant suffixes that should NOT be flagged as
+// typosquats of their root package. e.g. `prettier-2` is a documented
+// workspace alias for prettier v2, not an attack.
+const VARIANT_SUFFIX_RE = /-(?:\d+|next|new|alpha|beta|rc|canary|legacy|classic|experimental|preview|nightly|core|cli|server|client|browser|node|esm|cjs|types?|test|tests?)$/i;
+
+// Legitimate packages that happen to be Levenshtein-close to a popular
+// package. Hand-curated allowlist — adding a name here is a deliberate
+// "this is a real distinct project, not a typosquat" claim.
+const TYPOSQUAT_ALLOWLIST = new Set([
+  'enquirer',     // legit, distinct from inquirer
+  'tslint',       // legit (deprecated), distinct from eslint
+  'preact',       // legit, distinct from react
+  'koa',          // sometimes hits short-name typosquat heuristics
+  'hapi',         // 4-char popular package, false-prone
+  'fast-glob',    // distinct from glob
+  'micromatch',   // distinct from minimatch
+  'bcryptjs',     // distinct from bcrypt
+  'bcrypt-nodejs',// distinct from bcrypt
+  'redux-saga',   // distinct
+  'redux-thunk',
+  'react-router-dom-v5-compat',
+  'yjs',          // CRDT library, distinct from ejs
+  'uid',          // legit short-id package, distinct from uuid
+  'sax',          // XML parser, distinct from sass
+  'wrap-ansi',
+  'cli-spinners'
+]);
+
+// Legitimate scoped orgs that fall inside Levenshtein-distance-2 of a
+// known scope but are themselves real, distinct projects. Adding a scope
+// here means the project is a genuinely separate org/maintainer, not a
+// scope-confusion attack against the lookalike.
+const SCOPE_ALLOWLIST = new Set([
+  '@vue', '@vitejs', '@vitest', '@svitejs', '@bazel',
+  '@nrwl', '@npmcli', '@octokit', '@floating-ui', '@radix-ui',
+  '@webcomponents', '@nestjs', '@graphql-tools', '@reduxjs',
+  '@grpc',         // gRPC, distinct project from @trpc
+  '@swc',          // Speedy Web Compiler, distinct from @vue/@mui shapes
+  '@parcel',       // distinct
+  '@rollup',
+  '@bundle',
+  '@types'
+]);
+
+// Single source of truth for typosquat detection used by both checkD16
+// (drives the verdict floor) and DC-001 (drives the score). Centralizing
+// avoids drift like the prettier-2 false positive where one fired and the
+// other didn't.
+//
+// Returns an array of { dep, top, distance } matches. Caller decides weight.
+function findTyposquats(deps, { topList = TOP_PACKAGES, includeAll = false } = {}) {
+  const matches = [];
+  const top = includeAll ? topList : topList.slice(0, 20);
+  const topSet = new Set(top);
+  for (const dep of Object.keys(deps)) {
+    if (topSet.has(dep)) continue;
+    if (dep.startsWith('@')) continue;          // scoped names → DC-004
+    if (TYPOSQUAT_ALLOWLIST.has(dep)) continue; // hand-curated legit-but-close
+    if (VARIANT_SUFFIX_RE.test(dep)) continue;  // prettier-2, react-next, etc.
+    // dep ends with a digit and stripping the digit yields a top package?
+    // e.g. prettier2, react16, vue3 — workspace aliases, not typosquats.
+    const stripped = dep.replace(/\d+$/, '');
+    if (stripped !== dep && topSet.has(stripped)) continue;
+    const depLower = dep.toLowerCase();
+    let matched = false;
+    for (const t of top) {
+      const tLower = t.toLowerCase();
+      // Skip when dep is `<top>-<anything>` or `<top>.<anything>` —
+      // common workspace pattern, not a typosquat.
+      if (depLower.startsWith(tLower + '-') || depLower.startsWith(tLower + '.')) continue;
+      const minLen = Math.min(dep.length, t.length);
+      const d = levenshtein(depLower, tLower);
+      if (d === 1 && minLen >= 3) { matches.push({ dep, top: t, distance: d }); matched = true; break; }
+      // Bumped from minLen >= 6 to >= 8: real distance-2 typosquats targeting
+      // names shorter than 8 chars are rare; the FP cost (e.g. prettier vs
+      // prettier-2) dominated.
+      if (d === 2 && minLen >= 8) { matches.push({ dep, top: t, distance: d }); matched = true; break; }
+    }
+    void matched; // (fall-through guard for future logic)
+  }
+  return matches;
+}
+
 module.exports = {
   levenshtein,
   sha256,
   extractHooks,
   extractDeps,
+  findTyposquats,
+  TYPOSQUAT_ALLOWLIST,
+  SCOPE_ALLOWLIST,
   TOP_PACKAGES,
   KNOWN_SCOPES
 };

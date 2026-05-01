@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax check CLI sources
+        run: |
+          for f in cli/index.js cli/lib/*.js tests/run.js tests/sandbox.js tests/calibrate.js; do
+            node --check "$f"
+          done
+      - name: Run static fixture tests
+        run: npm test
+
+  sandbox:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build sandbox image
+        run: docker build -t clonesafe-sandbox:ci -f scripts/sandbox/Dockerfile scripts/sandbox
+      - name: Run sandbox install harness on fixtures
+        run: npm run test:docker

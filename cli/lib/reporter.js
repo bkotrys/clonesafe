@@ -88,8 +88,38 @@ function formatVerdict(result, noColor) {
     lines.push(row(''));
   }
 
+  // Diff summary (only when --diff was used and we had a prior cached run).
+  if (result.diff) {
+    const d = result.diff;
+    lines.push(row(`${boldFn('Diff vs prior scan')} (${(d.priorTimestamp || '?').slice(0, 10)}, was ${d.priorVerdict || '?'})`));
+    if (d.added.length === 0 && d.removed.length === 0) {
+      lines.push(row(dimFn('  no change in findings')));
+    } else {
+      if (d.added.length > 0) lines.push(row(colors.yellow(`  + ${d.added.length} new finding${d.added.length > 1 ? 's' : ''}`)));
+      if (d.removed.length > 0) lines.push(row(colors.green(`  - ${d.removed.length} resolved`)));
+    }
+    lines.push(row(''));
+  }
+
+  // Sandbox phase summary (only when --sandbox was used)
+  if (result.sandbox) {
+    if (result.sandbox.error) {
+      lines.push(row(`${boldFn('Sandbox:')} skipped — ${result.sandbox.error}`));
+    } else if (result.sandbox.skipped) {
+      lines.push(row(`${boldFn('Sandbox:')} skipped — ${result.sandbox.skipped}`));
+    } else {
+      const c = result.sandbox.classification || {};
+      const fn = c.verdict === 'MALICIOUS' ? colors.red : c.verdict === 'SUSPICIOUS' ? colors.yellow : colors.green;
+      lines.push(row(`${boldFn('Sandbox install:')} ${(noColor ? (s) => s : fn)(c.verdict || '?')}`));
+      if (c.reasons && c.reasons.length) {
+        lines.push(row(dimFn(`  signals: ${c.reasons.join(' | ')}`)));
+      }
+    }
+    lines.push(row(''));
+  }
+
   // Deterministic check results
-  lines.push(row(dimFn(`D1-D16 check results: ${formatCheckSummary(result.checks)}`)));
+  lines.push(row(dimFn(`D1-D20 check results: ${formatCheckSummary(result.checks)}`)));
 
   lines.push(hline);
   lines.push('');

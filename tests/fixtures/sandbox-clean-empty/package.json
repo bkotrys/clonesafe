@@ -1,0 +1,6 @@
+{
+  "name": "sandbox-clean-empty",
+  "version": "1.0.0",
+  "description": "Dependency-free baseline for the Docker sandbox harness. `npm install` here should produce no network attempts, no shell spawns, no SSH path reads — used to assert that the harness itself doesn't generate false positives.",
+  "private": true
+}
