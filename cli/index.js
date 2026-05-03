@@ -8,14 +8,19 @@ const { runDetectors } = require('./lib/detectors');
 const { loadIOCs, checkPackageIOCs, checkDomainIOCs, checkOrgIOCs, checkHashIOCs } = require('./lib/iocs');
 const { computeVerdict } = require('./lib/scoring');
 const { formatVerdict, formatJSON, printProgress, clearProgress } = require('./lib/reporter');
-const { extractDeps, extractMultiEcosystemDeps } = require('./lib/utils');
-const { checkProvenance } = require('./lib/provenance');
+const { extractDeps } = require('./lib/utils');
+const { checkProvenance, checkVersionDiff } = require('./lib/provenance');
 const { checkGitHistory } = require('./lib/git-history');
 const cache = require('./lib/cache');
 const sandbox = require('./lib/sandbox');
+const { extractMultiEcosystemDeps } = require('./lib/utils');
 const osv = require('./lib/osv');
 const packageAge = require('./lib/package-age');
 const scorecard = require('./lib/scorecard');
+const sarif = require('./lib/sarif');
+const sbom = require('./lib/sbom');
+const baseline = require('./lib/baseline');
+const rules = require('./lib/rules');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -34,7 +39,8 @@ function looksLikePositional(s) {
   if (!s) return false;
   if (/^https?:\/\//i.test(s)) return true;
   // Paths ending in a known config extension are treated as paths, never
-  // as slugs.
+  // as slugs — `my/rules.json` is much more likely a `--rules` value than
+  // a real GitHub slug ending in `.json`.
   if (/\.(json|ya?ml|toml)$/i.test(s)) return false;
   // owner/repo slug — single slash, plain identifiers, no leading `./`.
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:@[A-Za-z0-9_.-]+)?$/.test(s) && !s.startsWith('./') && !s.startsWith('../')) {
@@ -45,7 +51,7 @@ function looksLikePositional(s) {
 
 // Per-flag value shape — when a flag's value has a known shape and the
 // user gave us the bare-flag form (`--min-age 48h`), only consume the
-// next token if it actually fits.
+// next token if it actually fits. Otherwise leave it for positional.
 const VALUE_SHAPES = {
   'min-age': /^\d+\s*[smhdw]?$/i
 };
@@ -76,6 +82,9 @@ function consumesValue(flagName, valueToken) {
 
 const flags = {
   json: args.includes('--json'),
+  sarif: args.includes('--sarif'),
+  sbomCdx: args.includes('--sbom-cyclonedx'),
+  sbomSpdx: args.includes('--sbom-spdx'),
   quiet: args.includes('--quiet'),
   noColor: args.includes('--no-color'),
   sandbox: args.includes('--sandbox'),
@@ -84,13 +93,19 @@ const flags = {
   osv: args.includes('--osv'),
   scorecard: args.includes('--scorecard'),
   minAge: getOpt('min-age'),
+  baseline: args.includes('--baseline'),
+  rules: getOpt('rules'),
   help: args.includes('--help') || args.includes('-h'),
   version: args.includes('--version') || args.includes('-v')
 };
 const positional = args.filter((a, i) => {
   if (a.startsWith('-')) return false;
+  // Only skip this token if the previous flag actually consumed it as a value.
+  // Crucially, this matches the same heuristic getOpt() uses, so a user typing
+  // `clonesafe --min-age my/repo` correctly treats `my/repo` as the positional.
   const prev = args[i - 1];
   if (prev === '--min-age' && consumesValue('min-age', a)) return false;
+  if (prev === '--rules' && consumesValue('rules', a)) return false;
   return true;
 });
 
@@ -140,6 +155,16 @@ if (flags.help || positional.length === 0) {
     --scorecard  Run OpenSSF Scorecard-style probes (Maintained,
                  Code-Review, Dangerous-Workflow). Folds into the
                  score; no extra API calls beyond what's already done.
+    --sarif      Emit SARIF 2.1.0 (for GitHub Code Scanning UI).
+    --sbom-cyclonedx
+                 Emit CycloneDX 1.6 SBOM.
+    --sbom-spdx  Emit SPDX 2.3 SBOM.
+    --baseline   Write current findings to .clonesafe-baseline.json so
+                 future runs only fail on NEW findings.
+    --rules <path|guarddog>
+                 Import additional detector rules. \`guarddog\` imports
+                 the bundled GuardDog rule pack; a path imports a
+                 user-defined TOML/YAML rule file.
     --help, -h   Show this help
     --version    Show version
 
@@ -221,6 +246,17 @@ async function main() {
   const metadata = { repoMeta, ownerMeta, contributors, commits, owner, repo };
   const findings = runDetectors(files, metadata);
 
+  // Optional: extra user / vendor rule pack via --rules.
+  if (flags.rules) {
+    try {
+      const pack = rules.resolvePack(flags.rules);
+      const extra = rules.applyExtraRules(files, pack);
+      findings.push(...extra);
+    } catch (err) {
+      console.error(`Warning: --rules ${flags.rules}: ${err.message}`);
+    }
+  }
+
   // IOC cross-reference
   printProgress('Cross-referencing IOC databases...');
   const iocFindings = [];
@@ -240,13 +276,19 @@ async function main() {
   const historyFindings = await checkGitHistory(owner, repo, actualRef, ghToken);
   findings.push(...historyFindings);
 
-  // Optional: npm provenance check (--provenance flag).
+  // Optional: npm provenance + version-diff checks (--provenance flag).
+  // Both share the same registry-fetch path; running them together
+  // amortizes the network cost.
   let provenanceFindings = [];
   if (flags.provenance && pkgJson) {
-    printProgress('Checking npm provenance for direct deps...');
+    printProgress('Checking npm provenance + version-diff for direct deps...');
     try {
       const deps = extractDeps(pkgJson);
-      provenanceFindings = await checkProvenance(deps.all);
+      const [pf, df] = await Promise.all([
+        checkProvenance(deps.all),
+        checkVersionDiff(deps.all)
+      ]);
+      provenanceFindings = [...pf, ...df];
       findings.push(...provenanceFindings);
     } catch (err) {
       provenanceFindings = [{ error: err.message }];
@@ -317,7 +359,7 @@ async function main() {
   cache.save(owner, repo, verdict.verdict, [...findings, ...iocFindings]);
 
   // Build result object
-  const result = {
+  let result = {
     owner,
     repo,
     ref: actualRef,
@@ -332,8 +374,43 @@ async function main() {
     diff: diffResult
   };
 
+  // --baseline: write the current findings as a baseline and exit 0.
+  // Subsequent runs filter these fingerprints, so only NEW findings fail CI.
+  if (flags.baseline) {
+    const wrote = baseline.writeBaseline(result, process.cwd());
+    if (!flags.quiet && !flags.json) {
+      console.log(`  Wrote baseline: ${wrote} (${[...findings, ...iocFindings].length} findings captured)`);
+    }
+    process.exit(0);
+  }
+
+  // Apply baseline suppression if a baseline file exists.
+  const baselineDoc = baseline.load(process.cwd());
+  let suppressed = 0;
+  if (baselineDoc) {
+    const applied = baseline.applyToResult(result, baselineDoc);
+    suppressed = applied.suppressed;
+    result = applied.result;
+    // Recompute verdict against the filtered finding set so suppressed
+    // entries don't keep the verdict elevated.
+    const reVerdict = computeVerdict(floor, result.findings, result.iocFindings);
+    result.verdict = reVerdict.verdict;
+    result.score = reVerdict.score;
+    result.suppressedByBaseline = suppressed;
+  }
+
   // Output
-  if (flags.json) {
+  if (flags.sarif) {
+    console.log(JSON.stringify(sarif.emit(result), null, 2));
+  } else if (flags.sbomCdx || flags.sbomSpdx) {
+    const multiDeps = extractMultiEcosystemDeps(files);
+    const allFindings = [...findings, ...iocFindings];
+    if (flags.sbomCdx) {
+      console.log(JSON.stringify(sbom.emitCycloneDX({ owner, repo, ref: actualRef, deps: multiDeps, findings: allFindings }), null, 2));
+    } else {
+      console.log(JSON.stringify(sbom.emitSPDX({ owner, repo, ref: actualRef, deps: multiDeps }), null, 2));
+    }
+  } else if (flags.json) {
     console.log(formatJSON(result));
   } else if (!flags.quiet) {
     console.log(formatVerdict(result, flags.noColor));

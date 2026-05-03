@@ -1,0 +1,42 @@
+// clonesafe CI template — Jenkins (declarative pipeline).
+//
+// Drop into the root of your repo as `Jenkinsfile`. Requires a Jenkins
+// agent with Node.js 18+ available on PATH.
+
+pipeline {
+  agent any
+
+  environment {
+    CLONESAFE_VERSION = '0.4.0'
+    CLONESAFE_FAIL_ON = 'WARN'
+  }
+
+  stages {
+    stage('clonesafe pre-clone scan') {
+      steps {
+        script {
+          def repoSlug = env.GIT_URL?.replaceFirst(/^https?:\/\/github\.com\//, '')?.replaceFirst(/\.git$/, '')
+          def commit = env.GIT_COMMIT ?: 'HEAD'
+          if (!repoSlug) {
+            error('Could not derive owner/repo from GIT_URL — set GIT_URL or use multibranch pipeline.')
+          }
+          sh """
+            npx --yes --package=\"clonesafe@${env.CLONESAFE_VERSION}\" -- clonesafe \"${repoSlug}@${commit}\" --json > clonesafe-report.json || true
+          """
+          def report = readJSON file: 'clonesafe-report.json'
+          echo "clonesafe verdict: ${report.verdict}"
+          def failOn = env.CLONESAFE_FAIL_ON
+          def order = ['PROCEED', 'CAUTION', 'WARN', 'BLOCK']
+          if (order.indexOf(report.verdict) >= order.indexOf(failOn)) {
+            error("clonesafe verdict ${report.verdict} >= fail-on ${failOn}")
+          }
+        }
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'clonesafe-report.json', allowEmptyArchive: true
+        }
+      }
+    }
+  }
+}

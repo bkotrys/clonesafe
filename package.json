@@ -1,6 +1,6 @@
 {
   "name": "clonesafe",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Pre-clone GitHub repo scanner. Catches malicious npm packages, supply chain attacks, and Contagious Interview threats before git clone touches your disk.",
   "license": "MIT",
   "author": "Bartosz Kotrys <bkotrys@users.noreply.github.com>",
@@ -17,7 +17,9 @@
   },
   "files": [
     "cli/",
-    "iocs/"
+    "iocs/",
+    "detectors/guarddog-lite.json",
+    "templates/"
   ],
   "keywords": [
     "security",

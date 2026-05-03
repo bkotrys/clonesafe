@@ -1,5 +1,6 @@
 'use strict';
 
+const { getRemediation } = require('./remediation');
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 
 const colors = {
@@ -52,12 +53,31 @@ function formatVerdict(result, noColor) {
   const high = allFindings.filter(f => f.risk === 'HIGH');
   const medium = allFindings.filter(f => f.risk === 'MEDIUM' || f.risk === 'LOW');
 
+  const wrap = (text, width) => {
+    const out = [];
+    let line = '';
+    for (const word of String(text).split(/\s+/)) {
+      if (!word) continue;
+      if ((line + ' ' + word).trim().length > width) {
+        if (line) out.push(line);
+        line = word;
+      } else {
+        line = line ? line + ' ' + word : word;
+      }
+    }
+    if (line) out.push(line);
+    return out;
+  };
+
   if (critical.length > 0) {
     lines.push(row(colorFn(boldFn('CRITICAL'))));
     for (const f of critical.slice(0, 8)) {
       const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '';
-      lines.push(row(`  ${f.ruleId || f.iocId || ''} ${f.detail || f.explanation || ''}`));
+      const id = f.ruleId || f.iocId || '';
+      lines.push(row(`  ${id} ${f.detail || f.explanation || ''}`));
       if (loc) lines.push(row(`    ${dimFn(loc)} ${dimFn('(+' + f.weight + ')')}`));
+      const r = getRemediation(id);
+      if (r) for (const w of wrap(r, W - 8)) lines.push(row(`    ${dimFn('Fix: ' + w)}`));
     }
     if (critical.length > 8) lines.push(row(dimFn(`  ... and ${critical.length - 8} more CRITICAL findings`)));
     lines.push(row(''));
@@ -67,8 +87,11 @@ function formatVerdict(result, noColor) {
     lines.push(row(cyanFn(boldFn('HIGH'))));
     for (const f of high.slice(0, 5)) {
       const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '';
-      lines.push(row(`  ${f.ruleId || f.iocId || ''} ${f.detail || f.explanation || ''}`));
+      const id = f.ruleId || f.iocId || '';
+      lines.push(row(`  ${id} ${f.detail || f.explanation || ''}`));
       if (loc) lines.push(row(`    ${dimFn(loc)} ${dimFn('(+' + f.weight + ')')}`));
+      const r = getRemediation(id);
+      if (r) for (const w of wrap(r, W - 8)) lines.push(row(`    ${dimFn('Fix: ' + w)}`));
     }
     if (high.length > 5) lines.push(row(dimFn(`  ... and ${high.length - 5} more HIGH findings`)));
     lines.push(row(''));
@@ -118,8 +141,14 @@ function formatVerdict(result, noColor) {
     lines.push(row(''));
   }
 
+  // Suppression note when a baseline filtered findings.
+  if (result.suppressedByBaseline > 0) {
+    lines.push(row(dimFn(`Baseline: suppressed ${result.suppressedByBaseline} grandfathered finding${result.suppressedByBaseline > 1 ? 's' : ''} from .clonesafe-baseline.json`)));
+    lines.push(row(''));
+  }
+
   // Deterministic check results
-  lines.push(row(dimFn(`D1-D20 check results: ${formatCheckSummary(result.checks)}`)));
+  lines.push(row(dimFn(`D1-D34 check results: ${formatCheckSummary(result.checks)}`)));
 
   lines.push(hline);
   lines.push('');
