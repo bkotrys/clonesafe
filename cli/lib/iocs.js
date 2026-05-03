@@ -17,7 +17,10 @@ function loadIOCs() {
     packages: load('packages.json'),
     domains: load('domains.json'),
     orgs: load('github-orgs.json'),
-    hashes: load('hashes.json')
+    hashes: load('hashes.json'),
+    dprk: load('dprk-families.json'),
+    worms: load('worm-signatures.json'),
+    actions: load('actions-bad-shas.json')
   };
 }
 

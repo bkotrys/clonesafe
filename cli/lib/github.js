@@ -73,8 +73,15 @@ async function fetchCommits(owner, repo) {
   return apiFetch(`/repos/${owner}/${repo}/commits?per_page=10`);
 }
 
-async function fetchContents(owner, repo, ref) {
-  return apiFetch(`/repos/${owner}/${repo}/contents?ref=${ref}`);
+async function fetchContents(owner, repo, ref, dirPath) {
+  const p = dirPath ? `/${encodeURIComponent(dirPath).replace(/%2F/g, '/')}` : '';
+  return apiFetch(`/repos/${owner}/${repo}/contents${p}?ref=${ref}`);
+}
+
+async function listDirEntries(owner, repo, ref, dirPath) {
+  const r = await fetchContents(owner, repo, ref, dirPath);
+  if (!Array.isArray(r)) return [];
+  return r.filter(e => e && e.type === 'file').map(e => e.path);
 }
 
 async function fetchRawFile(owner, repo, ref, path) {
@@ -110,7 +117,12 @@ async function fetchAllFiles(owner, repo, ref) {
     // bun.lockb (binary) is intentionally skipped — clonesafe cannot grep binary lockfiles.
     // Multi-ecosystem (D17–D22):
     'setup.py', 'pyproject.toml', 'build.rs', 'go.mod',
-    'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock'
+    'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock',
+    // v0.4 surfaces:
+    'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
+    '.vscode/tasks.json', '.vscode/settings.json',
+    '.cursorrules', '.cursor/mcp.json',
+    'CONTRIBUTING.md'
   ];
 
   // Suspicious paths to probe
@@ -127,6 +139,17 @@ async function fetchAllFiles(owner, repo, ref) {
   for (const [p, content] of fetched) {
     files.set(p, content);
   }
+
+  // Discover and fetch GitHub Actions workflow files (variable filenames).
+  // One extra contents-API call; quietly skip if the dir doesn't exist.
+  try {
+    const workflowFiles = await listDirEntries(owner, repo, ref, '.github/workflows');
+    const wfYml = workflowFiles.filter(p => /\.(ya?ml)$/i.test(p));
+    if (wfYml.length > 0) {
+      const wfFetched = await fetchMultipleRaw(owner, repo, ref, wfYml);
+      for (const [p, content] of wfFetched) files.set(p, content);
+    }
+  } catch { /* directory missing or rate-limited — skip silently */ }
 
   // Discover entry points from package.json
   const pkgJson = files.get('package.json');
@@ -189,6 +212,7 @@ module.exports = {
   fetchContributors,
   fetchCommits,
   fetchContents,
+  listDirEntries,
   fetchRawFile,
   fetchMultipleRaw,
   fetchAllFiles,

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/worm-signatures.v1.json",
+  "updated": "2026-05-03",
+  "description": "Self-replicating supply-chain worm signatures (Shai-Hulud, Sha1-Hulud, GlassWorm). Strings or path patterns that survive across worm-republished packages and are very rare in legitimate code.",
+  "entries": [
+    {
+      "id": "WORM-SH1",
+      "pattern": "Shai-?Hulud|Sha1-?Hulud(?:\\s*:\\s*The\\s+Second\\s+Coming)?",
+      "campaign": "shai-hulud-2025-2026",
+      "description": "Literal worm name observed in payload strings, repo names, and commit messages of the npm worm waves of Sep 2025 (Shai-Hulud) and Nov 2025 (Sha1-Hulud).",
+      "source": "Unit 42, Sysdig, Datadog, Microsoft Threat Intel",
+      "source_url": "https://unit42.paloaltonetworks.com/npm-supply-chain-attack/",
+      "confidence": "high"
+    },
+    {
+      "id": "WORM-SH2",
+      "pattern": "bundle\\.js\\b.*postinstall|postinstall.*\\bnode\\s+bundle\\.js",
+      "campaign": "shai-hulud-2025-2026",
+      "description": "Shai-Hulud propagation pattern: republished packages ship a single 'bundle.js' that is invoked by a postinstall hook. The combination of this filename + postinstall is rare in legitimate packages.",
+      "confidence": "medium"
+    },
+    {
+      "id": "WORM-SH3",
+      "pattern": "https?://webhook\\.site/[a-f0-9-]{16,}",
+      "campaign": "shai-hulud-2025-2026",
+      "description": "webhook.site is the primary exfil endpoint family used by Shai-Hulud variants. Hard-coded URLs of this shape in package source are almost always exfil-callback URLs.",
+      "confidence": "high"
+    },
+    {
+      "id": "WORM-SH4",
+      "pattern": "(?:GITHUB_TOKEN|NPM_TOKEN|AWS_ACCESS_KEY_ID|GCP_SERVICE_ACCOUNT_KEY)[\\s\\S]{0,200}?(?:fetch|axios|got|request)\\s*\\(",
+      "campaign": "shai-hulud-2025-2026",
+      "description": "Worm credential-enumeration shape: read CI/cloud secrets from process.env then POST them. Loose proximity to keep regex bounded; combine with content-only files to avoid FPs in test code.",
+      "confidence": "medium"
+    },
+    {
+      "id": "WORM-GW1",
+      "pattern": "GlassWorm|glass-?worm",
+      "campaign": "glassworm-2025",
+      "description": "Self-propagating VS Code / Open VSX extension worm (Oct 2025). Literal string is a strong signal; almost always either researcher commentary or extracted sample.",
+      "source": "Fluid Attacks, ESET",
+      "confidence": "high"
+    },
+    {
+      "id": "WORM-GH1",
+      "pattern": "for\\s+repo\\s+in.*octokit\\.repos\\.create|gh\\s+repo\\s+create.*--public",
+      "campaign": "shai-hulud-2.0",
+      "description": "Shai-Hulud 2.0 exfil pattern: enumerate victim's repo list and create attacker-controlled repos containing stolen secrets. Loose pattern; combine with WORM-SH1/SH2 to escalate.",
+      "confidence": "low_alone"
+    }
+  ]
+}

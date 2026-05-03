@@ -1,0 +1,7 @@
+{
+  "name": "frontend-takehome",
+  "version": "0.0.1",
+  "dependencies": {
+    "vite-plugin-next-refresh": "^0.0.1"
+  }
+}

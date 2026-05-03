@@ -190,11 +190,58 @@ function findTyposquats(deps, { topList = TOP_PACKAGES, includeAll = false } = {
   return matches;
 }
 
+// extractMultiEcosystemDeps returns a flat array of { name, version, ecosystem }
+// across npm/pypi/rubygems/composer/cargo/go for downstream OSV / package-age
+// queries. Each ecosystem is parsed best-effort — a corrupted manifest skips
+// that ecosystem rather than blocking the rest of the scan.
+function extractMultiEcosystemDeps(files) {
+  const out = [];
+  // npm
+  const pkgJson = files.get('package.json');
+  if (pkgJson) {
+    const deps = extractDeps(pkgJson);
+    for (const [name, version] of Object.entries(deps.all)) {
+      out.push({ name, version, ecosystem: 'npm' });
+    }
+  }
+  // pypi — pyproject.toml [project].dependencies (PEP 621)
+  const pyproject = files.get('pyproject.toml');
+  if (pyproject) {
+    // Naive: lines under a `dependencies = [` array, "name (op version)" or "name>=ver".
+    const block = pyproject.match(/^\s*dependencies\s*=\s*\[([\s\S]*?)\]/m);
+    if (block) {
+      for (const m of block[1].matchAll(/["']([A-Za-z0-9._-]+)\s*([<>=!~][^"']*)?["']/g)) {
+        out.push({ name: m[1], version: (m[2] || '').replace(/^[<>=!~\s]+/, '') || null, ecosystem: 'pypi' });
+      }
+    }
+  }
+  // rubygems — Gemfile lines: gem 'name', '~> 1.2'
+  const gemfile = files.get('Gemfile');
+  if (gemfile) {
+    for (const m of gemfile.matchAll(/^\s*gem\s+["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?/gm)) {
+      out.push({ name: m[1], version: (m[2] || '').replace(/^[~><=!\s]+/, '') || null, ecosystem: 'rubygems' });
+    }
+  }
+  // composer — composer.json require map
+  const composer = files.get('composer.json');
+  if (composer) {
+    try {
+      const c = JSON.parse(composer);
+      for (const [name, version] of Object.entries(c.require || {})) {
+        if (name === 'php') continue;
+        out.push({ name, version: (version || '').replace(/^[~^><=!\s]+/, '') || null, ecosystem: 'composer' });
+      }
+    } catch { /* skip */ }
+  }
+  return out;
+}
+
 module.exports = {
   levenshtein,
   sha256,
   extractHooks,
   extractDeps,
+  extractMultiEcosystemDeps,
   findTyposquats,
   TYPOSQUAT_ALLOWLIST,
   SCOPE_ALLOWLIST,

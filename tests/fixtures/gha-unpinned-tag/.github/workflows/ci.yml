@@ -1,0 +1,12 @@
+name: CI
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # First-party actions: tag-pinned is fine, no finding.
+      - uses: actions/checkout@v4
+      # Third-party action by mutable tag → D24u (unpinned, WARN).
+      - uses: pnpm/action-setup@v3
+      - uses: codecov/codecov-action@v4
