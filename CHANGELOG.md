@@ -7,6 +7,41 @@ and clonesafe adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-03
+
+### Added — Phase 0 detectors (D24–D34)
+- **D24 / D24u — GitHub Actions audit.** `.github/workflows/*.yml` discovery via the contents API. D24 (BLOCK) fires on known-malicious commit SHAs from the new `iocs/actions-bad-shas.json` (CVE-2025-30066 tj-actions/changed-files SHA, reviewdog/action-setup) and on action+ref pairs in the tag blocklist. D24u (WARN) fires on third-party actions referenced by mutable tag/branch instead of a 40-char commit SHA. First-party orgs (`actions`, `github`, `docker`, `aws-actions`, `azure`, `google-github-actions`) and local `./` actions are not flagged.
+- **D25 — docs prompt-injection.** Extends D8 (which only scanned README.md) to CONTRIBUTING.md, `.cursorrules`, `.cursor/mcp.json`, `docs/**`, and other doc-like surfaces. WARN floor.
+- **D26 — VS Code auto-execute tasks.** Flags `.vscode/tasks.json` entries with `runOptions.runOn: "folderOpen"`. Comment-tolerant JSON parsing. WARN floor.
+- **D27 — Dockerfile / docker-compose hardening.** Flags `FROM` with mutable tags (`latest`, `lts`, `stable`, `slim`, `alpine`, `edge`, `main`, `master`, `nightly`, `rolling`) when not pinned by `@sha256:` digest, plus `RUN curl|sh` / `RUN wget|sh` patterns. `FROM scratch` is exempt; image-name regex tightened to correctly split `node:20-alpine` into image=`node` tag=`20-alpine`. WARN floor.
+- **D28 — Go init() with network/process.** `init()` runs implicitly on package import, so `init()` + `net/http` / `os/exec` / `net.Dial` / `os.Setenv` is the Go analogue of an npm postinstall. WARN floor.
+- **D29 — self-replicating worm signatures.** Matches the new `iocs/worm-signatures.json`: `Shai-Hulud` / `Sha1-Hulud` / `GlassWorm` literal strings, `bundle.js` postinstall pattern, `webhook.site/<uuid>` exfil URLs, and the credential-enumeration shape used by the Sep 2025 / Nov 2025 npm worm waves. BLOCK floor.
+- **D30 — DPRK content signatures.** Matches `iocs/dprk-families.json` `content_signatures`: HexEval long-hex-blob loaders, BeaverTail / InvisibleFerret / OtterCookie family-name strings, `ipcheck.cloud` / `*.workers.dev` victim-fingerprint endpoints. BLOCK floor.
+- **D31 — secrets / API key strings (gitleaks-lite).** AWS access keys, GitHub tokens (classic + fine-grained + app), Slack tokens, Google API keys, Stripe live keys, npm tokens, OpenAI keys, Anthropic keys, PEM private keys. Skips lockfiles and minified bundles. WARN floor.
+- **D32 — Python `.pth` file presence.** `.pth` files in site-packages auto-execute lines starting with `import` at every Python startup, regardless of whether the package is imported (LiteLLM 2026-03 incident). BLOCK floor on any committed `.pth` file.
+- **D33 — Starjacking.** `package.json` declares `repository.url` pointing at a different GitHub owner/repo than the one being scanned, AND the package name is on the popular-packages list. BLOCK floor.
+- **D34 — DPRK recruiter-lure combo.** Combo signal: README matches `iocs/dprk-families.json` lure indicators (interview/take-home/coding-assignment language, "do not run in Docker", Google Docs instruction links) AND repo is brand-new (<30d) AND owner is brand-new (<30d) AND single-contributor. Requires ≥3 of the 4 dimensions to escalate. BLOCK floor.
+
+### Added — async API integrations
+- `--osv` flag: queries `api.osv.dev/v1/querybatch` for every direct dep across npm/PyPI/RubyGems/Packagist/crates.io/Go/Maven, surfaces `MAL-*` / `GHSA-MAL-*` advisories from the OpenSSF malicious-packages feed at CRITICAL / weight 50. New module: `cli/lib/osv.js`.
+- `--min-age <duration>` flag: cool-down gate for npm direct deps. Format `48h` / `7d` / `2w`. WARN finding for any direct dep published more recently than the threshold (defangs the fresh-publish takedown window of Shai-Hulud / axios / lottie-class attacks). New module: `cli/lib/package-age.js`.
+- `--scorecard` flag: OpenSSF Scorecard-style probes derived from data already fetched: `Maintained` (last commit recency), `Code-Review` (no merge structure in recent commits), `Dangerous-Workflow` (`pull_request_target` + checkout PR head; `${{ github.event.* }}` interpolation in `run:` blocks). New module: `cli/lib/scorecard.js`.
+- `extractMultiEcosystemDeps()`: utility added to `cli/lib/utils.js`. Returns `{ name, version, ecosystem }` records across npm/pypi/rubygems/composer for downstream OSV consumption.
+
+### Added — IOC databases
+- `iocs/dprk-families.json`: name patterns (vite-plugin / logger families / passport-js shape), content signatures (HexEval, BeaverTail), lure indicators (interview language, "do not run in Docker"). Sourced from Socket / Datadog / Unit 42 / Mandiant / Silent Push / Recorded Future PurpleBravo coverage.
+- `iocs/worm-signatures.json`: Shai-Hulud / Sha1-Hulud / GlassWorm strings, bundle.js postinstall, webhook.site exfil. Sourced from Unit 42 / Sysdig / Datadog / Microsoft Threat Intel.
+- `iocs/actions-bad-shas.json`: CVE-2025-30066 tj-actions/changed-files compromised SHA (CISA AA25-077A), reviewdog/action-setup pivot SHA, plus the tj-actions v1..v45 tag blocklist.
+- All three new IOC files load through `loadIOCs()` (now returns `{packages, domains, orgs, hashes, dprk, worms, actions}`).
+
+### Added — argument parser hardening
+- `looksLikePositional()` heuristic + per-flag `VALUE_SHAPES` map: `--min-age my/repo` now correctly treats `my/repo` as the positional arg instead of consuming it as the duration value. Both the `=` form (`--min-age=48h`) and the bare form (`--min-age 48h`) work without ambiguity.
+
+### Changed
+- `runAllChecks()` signature now takes `{ owner, repo, repoMeta, ownerMeta, contributors }` so D33 (starjack) and D34 (recruiter-lure) can use repo metadata.
+- `cli/lib/github.js`: `fetchAllFiles()` now also probes `Dockerfile`, `docker-compose.yml`, `.vscode/tasks.json`, `.vscode/settings.json`, `.cursorrules`, `.cursor/mcp.json`, `CONTRIBUTING.md`, plus the contents of `.github/workflows/`.
+- `cli/lib/iocs.js`: `loadIOCs()` exposes the three new IOC catalogues.
+
 ## [0.3.0] — 2026-05-01
 
 ### Added — transitive + new-ecosystem detectors

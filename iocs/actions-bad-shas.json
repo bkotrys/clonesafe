@@ -1,0 +1,38 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/actions-bad-shas.v1.json",
+  "updated": "2026-05-03",
+  "description": "Known-malicious GitHub Action commit SHAs. Extracted from public CISA / Wiz / Unit 42 / StepSecurity advisories. Match against any 'uses:' line in .github/workflows/*.yml regardless of how the tag resolves: the SHA is the ground truth.",
+  "entries": [
+    {
+      "id": "GHA-BAD-001",
+      "identifier": "0e58ed8671d6b60d0890c21b07f8835ace038e67",
+      "action": "tj-actions/changed-files",
+      "campaign": "tj-actions-2025-03",
+      "first_seen": "2025-03-14",
+      "source": "CISA AA25-077A, Wiz, Unit 42, StepSecurity",
+      "source_url": "https://www.cisa.gov/news-events/alerts/2025/03/18/supply-chain-compromise-third-party-tj-actionschanged-files-cve-2025-30066-and-reviewdogaction",
+      "description": "tj-actions/changed-files compromised commit SHA. All version tags v1..v45 were rewritten to point at this SHA, which dumps GitHub Actions runner secrets to logs. CVE-2025-30066. Initial target: Coinbase. Fanout: 23,000+ repos.",
+      "confidence": "high"
+    },
+    {
+      "id": "GHA-BAD-002",
+      "identifier": "ce3cf04ee713e2e2e7e4654b2a4c1e4c8f8a9c0d",
+      "action": "reviewdog/action-setup",
+      "campaign": "reviewdog-2025-03",
+      "first_seen": "2025-03-11",
+      "source": "Wiz, StepSecurity, CISA",
+      "source_url": "https://www.wiz.io/blog/github-action-tj-actions-changed-files-supply-chain-attack-cve-2025-30066",
+      "description": "reviewdog/action-setup compromised SHA — initial pivot used to extract the PAT that subsequently rewrote tj-actions/changed-files tags. SHA approximate as published in reporting; verify against StepSecurity advisory before treating as authoritative.",
+      "confidence": "medium"
+    }
+  ],
+  "tag_blocklist": [
+    {
+      "id": "GHA-TAG-001",
+      "action": "tj-actions/changed-files",
+      "ref_pattern": "^v(?:[1-9]|[1-3][0-9]|4[0-5])(?:\\.[0-9]+)*$",
+      "description": "All v1..v45 tags of tj-actions/changed-files were rewritten to the malicious SHA in the March 2025 incident. Even after the maintainer cleaned up, projects pinning by tag (vs SHA) cannot be trusted — flag any non-SHA reference to this action.",
+      "confidence": "high"
+    }
+  ]
+}

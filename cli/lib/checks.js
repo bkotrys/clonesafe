@@ -423,7 +423,321 @@ function checkD16(pkgJson) {
   return findTyposquats(deps.all).length;
 }
 
-function runAllChecks(files, iocDB, { owner } = {}) {
+// ───────────────────────────────────────────────────────────────────
+// v0.4 detectors (D24–D34)
+// ───────────────────────────────────────────────────────────────────
+
+// GitHub Actions audit shared parser. Returns { bad, unpinned } counts so
+// callers can route each into a different verdict floor. `bad` covers
+// known-malicious commit SHAs and tj-actions-style poisoned-tag matches;
+// `unpinned` covers third-party actions referenced by mutable tag instead
+// of a 40-char commit SHA.
+function auditWorkflowUses(files, iocActions) {
+  const badShas = new Set(((iocActions && iocActions.entries) || [])
+    .map(e => (e.identifier || '').toLowerCase()));
+  const tagBlocks = (iocActions && iocActions.tag_blocklist) || [];
+  let bad = 0;
+  let unpinned = 0;
+  for (const [path, content] of files) {
+    if (!/^\.github\/workflows\/.+\.ya?ml$/i.test(path)) continue;
+    const re = /^\s*-?\s*uses:\s*['"]?([^@\s'"#]+)@([^\s'"#]+)/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const action = m[1];
+      const ref = m[2];
+      if (action.startsWith('./') || action.startsWith('../')) continue;
+      const trustedOrgs = /^(actions|github|docker|aws-actions|azure|google-github-actions)\//i;
+      const isSha = /^[0-9a-f]{40}$/i.test(ref);
+      let isBad = false;
+      if (isSha && badShas.has(ref.toLowerCase())) isBad = true;
+      if (!isBad) {
+        for (const block of tagBlocks) {
+          if (action === block.action) {
+            try {
+              if (new RegExp(block.ref_pattern).test(ref)) { isBad = true; break; }
+            } catch { /* invalid regex in IOC → skip */ }
+          }
+        }
+      }
+      if (isBad) { bad++; continue; }
+      if (!trustedOrgs.test(action) && !isSha) unpinned++;
+    }
+  }
+  return { bad, unpinned };
+}
+
+// D24: known-malicious GitHub Actions ref (SHA or tag-blocklist match) → BLOCK.
+function checkD24(files, iocActions) {
+  return auditWorkflowUses(files, iocActions).bad;
+}
+
+// D24u: unpinned third-party action references → WARN (common bad practice).
+function checkD24u(files, iocActions) {
+  return auditWorkflowUses(files, iocActions).unpinned;
+}
+
+// D25: Prompt-injection patterns in docs/issues/AI-config files (extension
+// of D8). README is already covered by D8; this catches CONTRIBUTING.md,
+// .cursorrules, .cursor/mcp.json, docs/* etc.
+function checkD25(files) {
+  const patterns = [
+    /ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|preceding)\s+(?:instructions?|directives?|rules?|prompts?)/i,
+    /disregard\s+(?:the\s+|any\s+|all\s+)?(?:above|previous|prior|foregoing)/i,
+    /\boverride\s+the\s+(?:rules?|scoring|verdict|detector)/i,
+    /(?:you are|you're)\s+now\s+(?:a|an|operating as)/i,
+    /SYSTEM:|<\|im_start\|>|<\|system\|>|\[INST\]/,
+    /clonesafe[\s-]*(?:verified|approved|whitelist|trust|audit)/i,
+    /(?:return|set|give)\s+(?:the\s+)?(?:verdict|score|result)\s+(?:to\s+|of\s+)?(?:0|zero|PASS|SAFE|PROCEED|CLEAN)/i,
+    /skip\s+(?:the\s+|any\s+|all\s+)?(?:detector|rule|scan|check)/i,
+    /bypass\s+(?:the\s+)?(?:scanner|detector|rule|check)/i
+  ];
+  let count = 0;
+  for (const [p, content] of files) {
+    // README.md is D8's domain — don't double-count.
+    if (p === 'README.md') continue;
+    const isDocLike = /\.(md|mdx|mdc|rst|txt)$/i.test(p) ||
+      p === 'CONTRIBUTING.md' || p === '.cursorrules' ||
+      p.startsWith('.cursor/') || p.startsWith('docs/');
+    if (!isDocLike) continue;
+    for (const pat of patterns) {
+      if (pat.test(content)) { count++; break; }
+    }
+  }
+  return count;
+}
+
+// D26: VS Code tasks.json auto-execute hooks. `runOn: "folderOpen"` on
+// any task is a known DPRK Contagious Interview TTP.
+function checkD26(files) {
+  const t = files.get('.vscode/tasks.json');
+  if (!t) return 0;
+  let parsed;
+  try {
+    // VS Code permits // and /* */ comments in tasks.json. Strip them
+    // before parsing, otherwise legit task files raise a SyntaxError.
+    const stripped = t
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+      .replace(/,\s*([}\]])/g, '$1');
+    parsed = JSON.parse(stripped);
+  } catch { return 0; }
+  const tasks = (parsed && parsed.tasks) || [];
+  let count = 0;
+  for (const task of tasks) {
+    const runOptions = task && task.runOptions;
+    if (runOptions && /folderOpen/i.test(runOptions.runOn || '')) count++;
+  }
+  return count;
+}
+
+// D27: Dockerfile / docker-compose with mutable `FROM` tags or `curl | sh`
+// patterns in `RUN` instructions.
+function checkD27(files) {
+  let count = 0;
+  for (const [p, content] of files) {
+    const isDockerfile = /(?:^|\/)Dockerfile(?:\.[^/]+)?$/i.test(p);
+    const isCompose = /docker-compose(?:\.[^/]+)?\.ya?ml$/i.test(p);
+    if (!isDockerfile && !isCompose) continue;
+
+    if (isDockerfile) {
+      // FROM image:TAG with no @sha256:... pin and a mutable-looking tag.
+      // `latest` is the canonical bad tag, but version aliases like `1`, `lts`,
+      // `stable`, `slim` move too. Pinned-by-digest (image@sha256:...) is OK.
+      // The image-name char class excludes `:` so `node:20-alpine` correctly
+      // splits image=`node` tag=`20-alpine` (a specific version that shouldn't
+      // trigger). `scratch` is a meta-image with no upstream and is exempt.
+      for (const m of content.matchAll(/^\s*FROM\s+([^\s#@:]+)(?::([^\s#@]+))?(@sha256:[a-f0-9]+)?/gim)) {
+        const image = (m[1] || '').toLowerCase();
+        const tag = m[2] || '';
+        const digest = m[3] || '';
+        if (digest) continue;
+        if (image === 'scratch') continue;
+        if (!tag) { count++; continue; } // no tag = `latest`
+        if (/^(latest|lts|stable|slim|alpine|edge|main|master|nightly|rolling)$/i.test(tag)) count++;
+      }
+      // RUN ... curl|sh / wget|sh — the canonical install-script footgun.
+      for (const m of content.matchAll(/^\s*RUN\s+[^\n]*/gim)) {
+        const line = m[0];
+        if (/\b(curl|wget)\b[^|]*\|\s*(?:sh|bash)\b/.test(line)) count++;
+      }
+    }
+    if (isCompose) {
+      // image: foo:latest / image: foo  → mutable.
+      for (const m of content.matchAll(/^\s*image:\s*([^\s#]+)/gm)) {
+        const ref = m[1];
+        if (/@sha256:[a-f0-9]+/.test(ref)) continue;
+        if (!/:[^/]+$/.test(ref)) { count++; continue; }
+        const tag = ref.split(':').pop();
+        if (/^(latest|lts|stable|slim|alpine|edge|main|master|nightly|rolling)$/i.test(tag)) count++;
+      }
+    }
+  }
+  return count;
+}
+
+// D28: Go `init()` functions with network/process calls. `init()` runs
+// implicitly at package import time, so `init()` + net/http or os/exec
+// is the Go analogue of a postinstall script.
+function checkD28(files) {
+  let count = 0;
+  for (const [p, content] of files) {
+    if (!p.endsWith('.go')) continue;
+    // Find each top-level func init() body.
+    // We use a non-greedy match up to the first close-brace at column 0,
+    // which in idiomatic Go always terminates a top-level function.
+    const re = /^func\s+init\s*\(\s*\)\s*\{([\s\S]*?)^\}/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const body = m[1];
+      if (/\b(?:exec\.Command|os\/exec|http\.(?:Get|Post)|net\.Dial|http\.NewRequest|net\/http|os\.Setenv)\b/.test(body)) count++;
+    }
+  }
+  return count;
+}
+
+// D29: Self-replicating worm signatures (Shai-Hulud, Sha1-Hulud, GlassWorm).
+function checkD29(files, iocWorms) {
+  const entries = (iocWorms && iocWorms.entries) || [];
+  if (entries.length === 0) return 0;
+  let count = 0;
+  for (const entry of entries) {
+    let re;
+    try { re = new RegExp(entry.pattern, 'i'); } catch { continue; }
+    for (const [, content] of files) {
+      if (re.test(content)) { count++; break; }
+    }
+  }
+  return count;
+}
+
+// D30: DPRK content signatures — HexEval loaders, family-name strings,
+// DPRK-specific exfil endpoints.
+function checkD30(files, iocDprk) {
+  const sigs = (iocDprk && iocDprk.content_signatures) || [];
+  if (sigs.length === 0) return 0;
+  let count = 0;
+  for (const sig of sigs) {
+    let re;
+    try { re = new RegExp(sig.pattern); } catch { continue; }
+    for (const [, content] of files) {
+      if (re.test(content)) { count++; break; }
+    }
+  }
+  return count;
+}
+
+// D31: Secrets / API-key strings (gitleaks-lite). Catches the common,
+// high-confidence shapes; intentionally conservative to avoid drowning
+// in entropy-driven FPs.
+function checkD31(files) {
+  const SECRET_PATTERNS = [
+    // AWS access keys.
+    /\bAKIA[0-9A-Z]{16}\b/,
+    // GitHub tokens (classic + fine-grained + app installation).
+    /\bghp_[A-Za-z0-9]{36}\b/,
+    /\bgho_[A-Za-z0-9]{36}\b/,
+    /\bghu_[A-Za-z0-9]{36}\b/,
+    /\bghs_[A-Za-z0-9]{36}\b/,
+    /\bgithub_pat_[A-Za-z0-9_]{82}\b/,
+    // Slack tokens.
+    /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
+    // Google API key.
+    /\bAIza[0-9A-Za-z_-]{35}\b/,
+    // Stripe live keys.
+    /\bsk_live_[0-9A-Za-z]{24,}\b/,
+    // npm tokens.
+    /\bnpm_[A-Za-z0-9]{36}\b/,
+    // OpenAI keys.
+    /\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b/,
+    // Anthropic keys.
+    /\bsk-ant-(?:api|sid)\d+-[A-Za-z0-9_-]{40,}\b/,
+    // Generic PEM private keys.
+    /-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----/
+  ];
+  let count = 0;
+  for (const [p, content] of files) {
+    // Skip lockfiles and minified bundles — too noisy, mostly FPs.
+    if (/^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$/.test(p)) continue;
+    if (/\.min\.(?:js|css)$/.test(p)) continue;
+    for (const pat of SECRET_PATTERNS) {
+      if (pat.test(content)) { count++; break; }
+    }
+  }
+  return count;
+}
+
+// D32: Python `.pth` file presence. .pth files placed in site-packages
+// auto-execute lines starting with `import` at every Python startup,
+// regardless of whether the package is imported. Even one such file is
+// a strong supply-chain risk signal (LiteLLM 2026-03 incident). For a
+// repo-level scan, we flag any committed `.pth` file.
+function checkD32(files) {
+  let count = 0;
+  for (const [p] of files) {
+    if (/\.pth$/.test(p)) count++;
+  }
+  return count;
+}
+
+// D33: Starjacking — package.json declares a `repository.url` that
+// points at a different GitHub owner/repo than the one we're scanning,
+// AND the package name is on the popular-packages list (heuristic for
+// "claiming to be a popular thing while living somewhere else").
+function checkD33(pkgJson, ctxOwner, ctxRepo) {
+  if (!pkgJson || !ctxOwner || !ctxRepo) return 0;
+  let pkg;
+  try { pkg = JSON.parse(pkgJson); } catch { return 0; }
+  const repoUrl = pkg.repository && (pkg.repository.url || (typeof pkg.repository === 'string' ? pkg.repository : ''));
+  if (!repoUrl) return 0;
+  const m = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?/i);
+  if (!m) return 0;
+  const declOwner = m[1].toLowerCase();
+  const declRepo = m[2].toLowerCase();
+  const sameRepo = (declOwner === ctxOwner.toLowerCase()) && (declRepo === ctxRepo.toLowerCase());
+  if (sameRepo) return 0;
+  // Different owner/repo than we're scanning → potential starjack.
+  // Require pkg.name to be on the popular list to keep this BLOCK-floor.
+  const { TOP_PACKAGES } = require('./utils');
+  const name = (pkg.name || '').toLowerCase();
+  if (TOP_PACKAGES.includes(name)) return 1;
+  // Lower-confidence variant: name claimed but not popular — still WARN-worthy.
+  return name ? 0 : 0;
+}
+
+// D34: Recruiter-lure heuristic — combo signal. Fires when a repo
+// has multiple lure indicators at once: README mentions an interview
+// task, repo is brand-new, owner is brand-new, single contributor,
+// suspicious package set. Each of these alone is a benign signal,
+// but the combination is highly characteristic of DPRK Contagious
+// Interview lure repos.
+function checkD34(files, iocDprk, repoMeta, ownerMeta, contributors) {
+  if (!iocDprk) return 0;
+  const lures = (iocDprk.lure_indicators || []);
+  const readme = files.get('README.md') || '';
+  let lureScore = 0;
+  for (const ind of lures) {
+    let re;
+    try { re = new RegExp(ind.pattern, 'i'); } catch { continue; }
+    if (re.test(readme)) lureScore++;
+  }
+  if (lureScore === 0) return 0;
+  // Combine with repo signals.
+  const ageDays = repoMeta && repoMeta.created_at
+    ? (Date.now() - new Date(repoMeta.created_at).getTime()) / 86400000
+    : null;
+  const ownerAgeDays = ownerMeta && ownerMeta.created_at
+    ? (Date.now() - new Date(ownerMeta.created_at).getTime()) / 86400000
+    : null;
+  const contribCount = Array.isArray(contributors) ? contributors.length : null;
+  let combo = lureScore;
+  if (ageDays !== null && ageDays < 30) combo++;
+  if (ownerAgeDays !== null && ownerAgeDays < 30) combo++;
+  if (contribCount !== null && contribCount <= 1) combo++;
+  // Only escalate to a count when at least 3 of the 4 dimensions agree.
+  return combo >= 3 ? 1 : 0;
+}
+
+function runAllChecks(files, iocDB, { owner, repo, repoMeta, ownerMeta, contributors } = {}) {
   const pkgJson = files.get('package.json') || null;
   const readme = files.get('README.md') || null;
   const gitattributes = files.get('.gitattributes') || null;
@@ -467,7 +781,19 @@ function runAllChecks(files, iocDB, { owner } = {}) {
     D20: checkD20(files),
     D21: checkD21(files),
     D22: checkD22(files),
-    D23: checkD23(files)
+    D23: checkD23(files),
+    D24: checkD24(files, iocDB.actions),
+    D24u: checkD24u(files, iocDB.actions),
+    D25: checkD25(files),
+    D26: checkD26(files),
+    D27: checkD27(files),
+    D28: checkD28(files),
+    D29: checkD29(files, iocDB.worms),
+    D30: checkD30(files, iocDB.dprk),
+    D31: checkD31(files),
+    D32: checkD32(files),
+    D33: checkD33(pkgJson, owner, repo),
+    D34: checkD34(files, iocDB.dprk, repoMeta, ownerMeta, contributors)
   };
 }
 
@@ -491,6 +817,15 @@ function computeVerdictFloor(results) {
   if (results.D15b > 0) blocks.push('D15b');
   if (results.D21 > 0) blocks.push('D21');
   if (results.D22 > 0) blocks.push('D22');
+  // v0.4 BLOCK floors:
+  // D29 (worm signature), D30 (DPRK content), D32 (.pth wheel), D33 (starjack popular pkg),
+  // D34 (recruiter-lure combo) are all high-confidence.
+  if (results.D24 > 0) blocks.push('D24');
+  if (results.D29 > 0) blocks.push('D29');
+  if (results.D30 > 0) blocks.push('D30');
+  if (results.D32 > 0) blocks.push('D32');
+  if (results.D33 > 0) blocks.push('D33');
+  if (results.D34 > 0) blocks.push('D34');
 
   // D4 alone is WARN; BLOCK if combined with D5 or D6
   if (results.D4 > 0 && (results.D5 > 0 || results.D6 > 0)) {
@@ -512,6 +847,21 @@ function computeVerdictFloor(results) {
   if (results.D18 > 0) warns.push('D18');
   if (results.D20 > 0) warns.push('D20');
   if (results.D23 > 0) warns.push('D23');
+  // v0.4 WARN floors:
+  // D24 (unpinned/known-bad action) — common, so WARN not BLOCK except when
+  //                                   the bad-SHA list matches (handled by
+  //                                   detector dedicated rule below).
+  // D25 (prompt injection in non-README docs) — single doc finding alone.
+  // D26 (vscode auto-execute task) — could be legit, surface but don't BLOCK.
+  // D27 (Dockerfile mutable tags / curl|sh) — common bad practice; WARN.
+  // D28 (Go init network/process) — could be legit; combine with other signals.
+  // D31 (committed secret) — leaks not malware; WARN, escalate via score.
+  if (results.D24u > 0) warns.push('D24u');
+  if (results.D25 > 0) warns.push('D25');
+  if (results.D26 > 0) warns.push('D26');
+  if (results.D27 > 0) warns.push('D27');
+  if (results.D28 > 0) warns.push('D28');
+  if (results.D31 > 0) warns.push('D31');
 
   if (warns.length > 0) {
     return { floor: 'WARN', triggers: warns };

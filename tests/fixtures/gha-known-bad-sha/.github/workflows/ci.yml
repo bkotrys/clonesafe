@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - name: Get changed files
+        # CVE-2025-30066 — known-malicious tj-actions/changed-files SHA from
+        # the March 2025 supply-chain compromise. This fixture asserts that
+        # clonesafe BLOCKs even when an attacker pinned by SHA, because the
+        # SHA itself is in the IOC database.
+        uses: tj-actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67

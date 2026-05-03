@@ -93,7 +93,7 @@ runs:
         # Pin the npm package to the same version this Action is tagged at,
         # so action consumers get reproducible behavior. Bump in lockstep
         # with each tagged release.
-        npx -y --package=clonesafe@0.3.0 -- clonesafe "$TARGET" "${sandbox_flag[@]}" --json --no-color > "$report" || true
+        npx -y --package=clonesafe@0.4.0 -- clonesafe "$TARGET" "${sandbox_flag[@]}" --json --no-color > "$report" || true
         verdict=$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).verdict||"")}catch(e){console.log("")}' "$report")
         score=$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).score||"")}catch(e){console.log("")}' "$report")
         printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/dprk-families.v1.json",
+  "updated": "2026-05-03",
+  "description": "Package name patterns and string indicators associated with DPRK Contagious Interview / PurpleBravo / Tenacious Pungsan campaigns. Used as a name-pattern feed by the dependency-resolution pipeline and as a content-signature feed by the source scanner.",
+  "name_patterns": [
+    {
+      "id": "DPRK-FAM-001",
+      "pattern": "^vite-(plugin|loader)-",
+      "campaign": "contagious-interview",
+      "description": "DPRK frequently ships fake vite plugins/loaders with logger-style names. The pattern alone is not malicious — pair with low-age + suspicious owner + install-time exec to escalate.",
+      "source": "Socket Threat Research, Datadog Tenacious Pungsan, Unit 42",
+      "confidence": "low_alone"
+    },
+    {
+      "id": "DPRK-FAM-002",
+      "pattern": "^(pino|debug|logger|log[-_]?(?:fmt|kit|util|core|base|debugger))",
+      "campaign": "contagious-interview",
+      "description": "Recurring DPRK pattern: SDK / logger / debug shims as cover for credential-stealing payload (pino-debugger, debug-fmt, debug-glitz, logkitx, logger-base, dev-log-core).",
+      "source": "Socket Threat Research, Datadog",
+      "confidence": "low_alone"
+    },
+    {
+      "id": "DPRK-FAM-003",
+      "pattern": "^(passports?[-_]js|sumsub-|react-plaid-sdk|node-orm-mongoose|router-parse)",
+      "campaign": "contagious-interview",
+      "description": "Specific package-name shapes flagged in Socket / Phylum coverage of DPRK 2025-2026 waves.",
+      "source": "Socket, Phylum, Hacker News reporting on 1700-package DPRK wave",
+      "confidence": "medium"
+    }
+  ],
+  "content_signatures": [
+    {
+      "id": "DPRK-SIG-001",
+      "pattern": "(?:Buffer\\.from|Uint8Array\\.from)\\(\\s*['\"][a-fA-F0-9]{200,}['\"]\\s*,\\s*['\"]hex['\"]\\)",
+      "campaign": "contagious-interview-hexeval",
+      "description": "HexEval loader: long hex blob decoded into a buffer at module load. Followed by eval() or new Function(). Hallmark of DPRK loaders since Sep 2025.",
+      "source": "Datadog Security Labs, Unit 42",
+      "confidence": "high"
+    },
+    {
+      "id": "DPRK-SIG-002",
+      "pattern": "BeaverTail|InvisibleFerret|OtterCookie|HexEval(?:Loader)?",
+      "campaign": "contagious-interview",
+      "description": "Public family names attached to DPRK Contagious Interview malware. Their literal appearance in source is almost always a researcher comment, but it is also a clear high-signal indicator that the file is part of a tracked sample.",
+      "source": "Mandiant, Unit 42, Datadog, Microsoft Threat Intel",
+      "confidence": "high"
+    },
+    {
+      "id": "DPRK-SIG-003",
+      "pattern": "ipcheck\\.cloud|ip-check\\.workers\\.dev",
+      "campaign": "contagious-interview",
+      "description": "Recurring victim-IP enumeration endpoints used by DPRK loaders to fingerprint targets before stage-2 delivery.",
+      "source": "Silent Push, Recorded Future PurpleBravo report",
+      "confidence": "high"
+    }
+  ],
+  "lure_indicators": [
+    {
+      "id": "DPRK-LURE-001",
+      "pattern": "\\b(?:coding\\s+(?:assignment|challenge|task)|take[\\s-]?home(?:\\s+(?:assignment|task|exercise|test|interview))?|interview\\s+(?:project|exercise|task)|technical\\s+screen)\\b",
+      "description": "README / repo-description language that is characteristic of recruiter-lure repos. Combine with low age + single-contributor + recent npm deps to escalate.",
+      "confidence": "low_alone"
+    },
+    {
+      "id": "DPRK-LURE-002",
+      "pattern": "(?:please\\s+)?(?:do\\s+not|don'?t)\\s+(?:run|test)\\s+(?:this|it|the\\s+code)\\s+(?:in\\s+)?(?:docker|a\\s+container|a\\s+vm|sandbox)",
+      "description": "Lure repos sometimes ask the candidate to disable Docker/AV. Strong red flag.",
+      "confidence": "high"
+    },
+    {
+      "id": "DPRK-LURE-003",
+      "pattern": "https?://docs\\.google\\.com/(?:document|presentation|spreadsheets)/",
+      "description": "Recruiter-lure repos commonly redirect candidates to Google Docs for instructions. Not malicious alone — only meaningful in combination with other lure indicators.",
+      "confidence": "low_alone"
+    }
+  ]
+}

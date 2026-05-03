@@ -33,12 +33,12 @@ function loadFixture(dir) {
   return files;
 }
 
-function runFixture(name) {
+function runFixture(name, metadata = {}) {
   const files = loadFixture(name);
   const iocDB = loadIOCs();
-  const checks = runAllChecks(files, iocDB);
+  const checks = runAllChecks(files, iocDB, metadata);
   const floor = computeVerdictFloor(checks);
-  const findings = runDetectors(files, {});
+  const findings = runDetectors(files, metadata);
   return { files, checks, floor, findings };
 }
 
@@ -128,12 +128,93 @@ const CASES = [
     floor: 'BLOCK',
     mustFire: ['D1'],
     mustNotFire: []
+  },
+  // ── v0.4 detector fixtures ───────────────────────────────────────
+  {
+    name: 'gha-known-bad-sha',
+    floor: 'BLOCK',
+    mustFire: ['D24'],
+    mustNotFire: ['D24u']
+  },
+  {
+    name: 'gha-unpinned-tag',
+    floor: 'WARN',
+    mustFire: ['D24u'],
+    mustNotFire: ['D24']
+  },
+  {
+    name: 'vscode-task-folderopen',
+    floor: 'WARN',
+    mustFire: ['D26'],
+    mustNotFire: []
+  },
+  {
+    name: 'dockerfile-mutable-tag',
+    floor: 'WARN',
+    mustFire: ['D27'],
+    mustNotFire: []
+  },
+  {
+    name: 'go-init-network',
+    floor: 'WARN',
+    mustFire: ['D28'],
+    mustNotFire: ['D20']
+  },
+  {
+    name: 'worm-shai-hulud',
+    floor: 'BLOCK',
+    mustFire: ['D29'],
+    mustNotFire: []
+  },
+  {
+    name: 'dprk-hexeval',
+    floor: 'BLOCK',
+    mustFire: ['D30'],
+    mustNotFire: []
+  },
+  {
+    name: 'secret-leaked-aws',
+    floor: 'WARN',
+    mustFire: ['D31'],
+    mustNotFire: []
+  },
+  {
+    name: 'python-pth-file',
+    floor: 'BLOCK',
+    mustFire: ['D32'],
+    mustNotFire: []
+  },
+  {
+    name: 'docs-prompt-injection',
+    floor: 'WARN',
+    mustFire: ['D25'],
+    mustNotFire: ['D8']
+  },
+  {
+    name: 'starjack-popular',
+    floor: 'BLOCK',
+    mustFire: ['D33'],
+    mustNotFire: [],
+    metadata: { owner: 'attacker', repo: 'lure-react' }
+  },
+  {
+    name: 'recruiter-lure-combo',
+    floor: 'BLOCK',
+    mustFire: ['D34'],
+    mustNotFire: [],
+    metadata: {
+      owner: 'fly-by-night',
+      repo: 'frontend-takehome',
+      repoMeta: { created_at: new Date(Date.now() - 5 * 86400000).toISOString() },
+      ownerMeta: { created_at: new Date(Date.now() - 10 * 86400000).toISOString(), type: 'User' },
+      contributors: [{ login: 'fly-by-night' }]
+    }
   }
 ];
 
 for (const c of CASES) {
   test(`fixture: ${c.name}`, () => {
-    const { checks, floor } = runFixture(c.name);
+    const { checks, floor } = runFixture(c.name, c.metadata || {});
     for (const code of c.mustFire) {
       assert.ok(checks[code] > 0, `expected ${code} > 0 in ${c.name}, got ${code}=${checks[code]} (all: ${JSON.stringify(checks)})`);
     }
@@ -147,7 +228,47 @@ for (const c of CASES) {
 // Sanity: detectors module still loads and runs on every fixture without throwing.
 test('runDetectors smoke test across all fixtures', () => {
   for (const c of CASES) {
-    const { findings } = runFixture(c.name);
+    const { findings } = runFixture(c.name, c.metadata || {});
     assert.ok(Array.isArray(findings), `findings should be array for ${c.name}`);
   }
+});
+
+// ── unit tests for v0.4 modules ──────────────────────────────────────
+
+test('utils: extractMultiEcosystemDeps covers npm/pypi/rubygems/composer', () => {
+  const { extractMultiEcosystemDeps } = require('../cli/lib/utils');
+  const files = new Map([
+    ['package.json', '{"dependencies":{"react":"^18.0.0"}}'],
+    ['pyproject.toml', '[project]\ndependencies = [\n  "requests>=2.31.0",\n]'],
+    ['Gemfile', "gem 'rails', '~> 7.0'\n"],
+    ['composer.json', '{"require":{"php":">=8.1","monolog/monolog":"^3.0"}}']
+  ]);
+  const deps = extractMultiEcosystemDeps(files);
+  const ecos = new Set(deps.map(d => d.ecosystem));
+  assert.ok(ecos.has('npm'));
+  assert.ok(ecos.has('pypi'));
+  assert.ok(ecos.has('rubygems'));
+  assert.ok(ecos.has('composer'));
+  // php pseudo-dep should be filtered out
+  assert.ok(!deps.some(d => d.name === 'php'));
+});
+
+test('osv: ecosystem mapping is correct', () => {
+  const osv = require('../cli/lib/osv');
+  assert.equal(osv.ecoFromManifest('npm'), 'npm');
+  assert.equal(osv.ecoFromManifest('pypi'), 'PyPI');
+  assert.equal(osv.ecoFromManifest('rubygems'), 'RubyGems');
+  assert.equal(osv.ecoFromManifest('cargo'), 'crates.io');
+  assert.equal(osv.ecoFromManifest('go'), 'Go');
+  assert.equal(osv.ecoFromManifest('composer'), 'Packagist');
+  assert.equal(osv.ecoFromManifest('unknown-eco'), null);
+});
+
+test('package-age: parses duration formats', () => {
+  const pa = require('../cli/lib/package-age');
+  assert.equal(pa.parseDuration('48h'), 48 * 3600 * 1000);
+  assert.equal(pa.parseDuration('7d'), 7 * 86400 * 1000);
+  assert.equal(pa.parseDuration('2w'), 14 * 86400 * 1000);
+  assert.equal(pa.parseDuration(''), 0);
+  assert.equal(pa.parseDuration('garbage'), 0);
 });

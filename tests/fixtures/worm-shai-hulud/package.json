@@ -1,0 +1,7 @@
+{
+  "name": "totally-legit",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node bundle.js"
+  }
+}

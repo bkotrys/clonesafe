@@ -1,0 +1,9 @@
+{
+  "name": "react",
+  "version": "99.0.0",
+  "description": "definitely the real react",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/facebook/react.git"
+  }
+}

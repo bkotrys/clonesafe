@@ -8,11 +8,14 @@ const { runDetectors } = require('./lib/detectors');
 const { loadIOCs, checkPackageIOCs, checkDomainIOCs, checkOrgIOCs, checkHashIOCs } = require('./lib/iocs');
 const { computeVerdict } = require('./lib/scoring');
 const { formatVerdict, formatJSON, printProgress, clearProgress } = require('./lib/reporter');
-const { extractDeps } = require('./lib/utils');
+const { extractDeps, extractMultiEcosystemDeps } = require('./lib/utils');
 const { checkProvenance } = require('./lib/provenance');
 const { checkGitHistory } = require('./lib/git-history');
 const cache = require('./lib/cache');
 const sandbox = require('./lib/sandbox');
+const osv = require('./lib/osv');
+const packageAge = require('./lib/package-age');
+const scorecard = require('./lib/scorecard');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -22,6 +25,55 @@ const pkg = require('../package.json');
 // ─── Argument parsing ───────────────────────────────────────────────
 
 const args = process.argv.slice(2);
+
+// Heuristic: does this token look like an owner/repo slug or URL that the
+// user clearly meant as the positional arg, not as the value for a flag?
+// Used by getOpt() to avoid the `--min-age my/repo` footgun where the
+// repo slug gets consumed as the duration value.
+function looksLikePositional(s) {
+  if (!s) return false;
+  if (/^https?:\/\//i.test(s)) return true;
+  // Paths ending in a known config extension are treated as paths, never
+  // as slugs.
+  if (/\.(json|ya?ml|toml)$/i.test(s)) return false;
+  // owner/repo slug — single slash, plain identifiers, no leading `./`.
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:@[A-Za-z0-9_.-]+)?$/.test(s) && !s.startsWith('./') && !s.startsWith('../')) {
+    return true;
+  }
+  return false;
+}
+
+// Per-flag value shape — when a flag's value has a known shape and the
+// user gave us the bare-flag form (`--min-age 48h`), only consume the
+// next token if it actually fits.
+const VALUE_SHAPES = {
+  'min-age': /^\d+\s*[smhdw]?$/i
+};
+
+function getOpt(name) {
+  const eq = `--${name}=`;
+  const shape = VALUE_SHAPES[name];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith(eq)) return args[i].slice(eq.length);
+    if (args[i] === `--${name}`) {
+      const next = args[i + 1];
+      if (!next || next.startsWith('-')) return null;
+      if (looksLikePositional(next)) return null;
+      if (shape && !shape.test(next)) return null;
+      return next;
+    }
+  }
+  return null;
+}
+
+function consumesValue(flagName, valueToken) {
+  if (!valueToken || valueToken.startsWith('-')) return false;
+  if (looksLikePositional(valueToken)) return false;
+  const shape = VALUE_SHAPES[flagName];
+  if (shape && !shape.test(valueToken)) return false;
+  return true;
+}
+
 const flags = {
   json: args.includes('--json'),
   quiet: args.includes('--quiet'),
@@ -29,10 +81,18 @@ const flags = {
   sandbox: args.includes('--sandbox'),
   provenance: args.includes('--provenance'),
   diff: args.includes('--diff'),
+  osv: args.includes('--osv'),
+  scorecard: args.includes('--scorecard'),
+  minAge: getOpt('min-age'),
   help: args.includes('--help') || args.includes('-h'),
   version: args.includes('--version') || args.includes('-v')
 };
-const positional = args.filter(a => !a.startsWith('--') && !a.startsWith('-'));
+const positional = args.filter((a, i) => {
+  if (a.startsWith('-')) return false;
+  const prev = args[i - 1];
+  if (prev === '--min-age' && consumesValue('min-age', a)) return false;
+  return true;
+});
 
 if (flags.version) {
   console.log(`clonesafe ${pkg.version}`);
@@ -70,6 +130,16 @@ if (flags.help || positional.length === 0) {
     --diff       Differential scan: compare against the cached findings
                  from a prior scan of this repo and surface only what's
                  new or removed. Cache lives in data/cache/ (gitignored).
+    --osv        Query api.osv.dev / OpenSSF malicious-packages feed for
+                 every direct dep across npm/pypi/rubygems/composer.
+                 Free public API, ~2-6s extra latency.
+    --min-age <duration>
+                 Cool-down gate: WARN/BLOCK if any direct dep was
+                 published more recently than the threshold. Format:
+                 \`48h\`, \`7d\`, \`2w\`. npm-only for now.
+    --scorecard  Run OpenSSF Scorecard-style probes (Maintained,
+                 Code-Review, Dangerous-Workflow). Folds into the
+                 score; no extra API calls beyond what's already done.
     --help, -h   Show this help
     --version    Show version
 
@@ -142,8 +212,8 @@ async function main() {
   }
 
   // Phase 0: Deterministic checks
-  printProgress('Running deterministic checks (D1-D16)...');
-  const checkResults = runAllChecks(files, iocDB, { owner });
+  printProgress('Running deterministic checks (D1-D34)...');
+  const checkResults = runAllChecks(files, iocDB, { owner, repo, repoMeta, ownerMeta, contributors });
   const floor = computeVerdictFloor(checkResults);
 
   // Phase A: Detector rules
@@ -181,6 +251,39 @@ async function main() {
     } catch (err) {
       provenanceFindings = [{ error: err.message }];
     }
+  }
+
+  // Optional: OSV / OpenSSF malicious-packages lookup (--osv flag).
+  let osvFindings = [];
+  if (flags.osv) {
+    printProgress('Querying OSV.dev for malicious-package advisories...');
+    try {
+      const multiDeps = extractMultiEcosystemDeps(files);
+      osvFindings = await osv.queryDeps(multiDeps);
+      iocFindings.push(...osvFindings);
+    } catch (err) {
+      osvFindings = [{ error: err.message }];
+    }
+  }
+
+  // Optional: package-age cool-down gate (--min-age flag).
+  let ageFindings = [];
+  if (flags.minAge && pkgJson) {
+    printProgress(`Checking direct-dep ages against --min-age=${flags.minAge}...`);
+    try {
+      const deps = extractDeps(pkgJson);
+      ageFindings = await packageAge.checkAges(deps.all, flags.minAge);
+      findings.push(...ageFindings);
+    } catch (err) {
+      ageFindings = [{ error: err.message }];
+    }
+  }
+
+  // Optional: Scorecard-style probes (--scorecard flag).
+  let scorecardFindings = [];
+  if (flags.scorecard) {
+    scorecardFindings = scorecard.runProbes({ files, repoMeta, ownerMeta, contributors, commits });
+    findings.push(...scorecardFindings);
   }
 
   // Phase B: Scoring and verdict
