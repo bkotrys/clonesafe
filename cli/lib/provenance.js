@@ -124,7 +124,50 @@ async function checkProvenance(deps, { timeoutMs = 8000, maxDeps = MAX_DEPS } = 
         match: `${names[i]}: provenance disappeared at v${downgradeToVersion} (last seen at v${downgradeFromVersion})`,
         detail: 'package previously had provenance attestations but a newer version from the same publisher does not — possible publisher-token hijack'
       });
-    } else if (!hasLatest) {
+    }
+
+    // Maintainer-takeover heuristics — independent of provenance.
+    if (sortedVersions.length >= 2) {
+      const prevV = sortedVersions[sortedVersions.length - 2];
+      const prevPub = (versions[prevV] && versions[prevV]._npmUser && versions[prevV]._npmUser.name) || null;
+      const currPub = (latestMeta._npmUser && latestMeta._npmUser.name) || null;
+      // Bot publishers (npm-bot, github-actions[bot], OIDC-published, etc.)
+      // legitimately rotate between releases. Don't flag those — they'd
+      // generate constant noise on well-automated packages.
+      const botRe = /(?:^|[\s_-])(?:bot|automation|ci|cd|releaser?|publisher)$|^[a-z-]+\[bot\]$|^github-actions/i;
+      const eitherIsBot = (prevPub && botRe.test(prevPub)) || (currPub && botRe.test(currPub));
+      if (prevPub && currPub && prevPub !== currPub && !eitherIsBot) {
+        findings.push({
+          ruleId: 'MAINT-PUBLISHER-DELTA',
+          detector: 'provenance',
+          risk: 'MEDIUM',
+          weight: 12,
+          package: names[i],
+          match: `${names[i]}@${latest}: publisher changed (${prevPub} → ${currPub})`,
+          detail: 'latest npm publish was made by a different account than the prior version — pair with provenance regression or cadence anomaly to escalate'
+        });
+      }
+      // Cadence anomaly: long quiet period followed by a sudden publish.
+      const prevTime = time[prevV] && new Date(time[prevV]).getTime();
+      const currTime = time[latest] && new Date(time[latest]).getTime();
+      if (prevTime && currTime) {
+        const gapDays = (currTime - prevTime) / 86400000;
+        const sinceLatest = (Date.now() - currTime) / 86400000;
+        if (gapDays > 180 && sinceLatest < 14) {
+          findings.push({
+            ruleId: 'MAINT-CADENCE',
+            detector: 'provenance',
+            risk: 'MEDIUM',
+            weight: 10,
+            package: names[i],
+            match: `${names[i]}@${latest}: ${Math.round(gapDays)}d quiet period, then publish ${Math.round(sinceLatest)}d ago`,
+            detail: 'package was dormant for >180 days then suddenly published — combine with publisher delta or provenance regression to escalate'
+          });
+        }
+      }
+    }
+
+    if (!downgradeToVersion && !hasLatest) {
       // Info-only — most packages still ship without provenance. We surface
       // it at LOW so report consumers see the gap without inflating the
       // score for benign cases.
@@ -142,4 +185,69 @@ async function checkProvenance(deps, { timeoutMs = 8000, maxDeps = MAX_DEPS } = 
   return findings;
 }
 
-module.exports = { checkProvenance };
+// Version-diff signals: compare prior vs latest version of every direct
+// dep for newly-introduced install scripts, network calls in scripts, or
+// new dependency on a known suspicious package. This is the Socket
+// "permission creep" signal computed from registry metadata alone — no
+// tarball downloads required.
+async function checkVersionDiff(deps, { timeoutMs = 10000, maxDeps = MAX_DEPS } = {}) {
+  const findings = [];
+  const names = Object.keys(deps).filter(n => !n.startsWith('@types/')).slice(0, maxDeps);
+  if (names.length === 0) return findings;
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const metas = await Promise.allSettled(names.map(n => fetchPackage(n, { signal: ctrl.signal })));
+  clearTimeout(timer);
+
+  const RISKY_HOOKS = ['preinstall', 'install', 'postinstall', 'prepare'];
+  const NET_RE = /\b(curl|wget|fetch|http|https|axios|got|request)\b/i;
+
+  for (let i = 0; i < names.length; i++) {
+    const r = metas[i];
+    if (r.status !== 'fulfilled' || !r.value) continue;
+    const meta = r.value;
+    if (meta._err) continue;
+    const versions = meta.versions || {};
+    const time = meta.time || {};
+    const ordered = Object.keys(versions)
+      .filter(v => time[v])
+      .sort((a, b) => new Date(time[a]) - new Date(time[b]));
+    if (ordered.length < 2) continue;
+    const prev = versions[ordered[ordered.length - 2]];
+    const curr = versions[ordered[ordered.length - 1]];
+    const prevScripts = (prev && prev.scripts) || {};
+    const currScripts = (curr && curr.scripts) || {};
+    const newHooks = [];
+    for (const h of RISKY_HOOKS) {
+      if (currScripts[h] && !prevScripts[h]) newHooks.push(h);
+    }
+    if (newHooks.length > 0) {
+      findings.push({
+        ruleId: 'DIFF-NEW-HOOK',
+        detector: 'version-diff',
+        risk: 'HIGH',
+        weight: 30,
+        package: names[i],
+        match: `${names[i]}@${ordered[ordered.length - 1]} added ${newHooks.join(',')} hook(s) since v${ordered[ordered.length - 2]}`,
+        detail: 'newer version of this dependency added an install-time lifecycle hook — common supply-chain compromise pattern'
+      });
+    }
+    const newNetHook = RISKY_HOOKS.find(h => currScripts[h] && !NET_RE.test(prevScripts[h] || '') && NET_RE.test(currScripts[h] || ''));
+    if (newNetHook) {
+      findings.push({
+        ruleId: 'DIFF-NEW-NET-HOOK',
+        detector: 'version-diff',
+        risk: 'CRITICAL',
+        weight: 45,
+        blockAlone: true,
+        package: names[i],
+        match: `${names[i]}@${ordered[ordered.length - 1]} added network call to ${newNetHook}`,
+        detail: 'newer version added an install-time network call that the previous version did not have'
+      });
+    }
+  }
+  return findings;
+}
+
+module.exports = { checkProvenance, checkVersionDiff };

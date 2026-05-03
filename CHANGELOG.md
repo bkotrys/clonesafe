@@ -7,13 +7,36 @@ and clonesafe adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-03
+
+### Added — output formats & integrations
+- `--sarif` flag: emit SARIF 2.1.0 with stable `partialFingerprints.detectorHash` per finding so suppression survives line-number drift. Drives the GitHub Code Scanning UI when uploaded via `github/codeql-action/upload-sarif`. New module: `cli/lib/sarif.js`.
+- `--sbom-cyclonedx` flag: emit a CycloneDX 1.6 SBOM covering the npm/pypi/rubygems/composer dependency closure, with OSV malware advisories surfaced under `vulnerabilities`.
+- `--sbom-spdx` flag: emit an SPDX 2.3 SBOM with `DEPENDS_ON` relationships and PURL refs. New module: `cli/lib/sbom.js`.
+- `templates/ci/`: drop-in pipeline configurations for GitLab CI/CD, Bitbucket Pipelines, CircleCI, and Jenkins (declarative).
+
+### Added — suppression & remediation UX
+- `--baseline` flag: write `.clonesafe-baseline.json` with stable fingerprints of every current finding. Future runs filter these out, so existing tech debt never re-fails CI; only NEW findings surface. Each entry captures `reason` and supports an optional `expires` ISO date that forces re-evaluation. New module: `cli/lib/baseline.js`.
+- `cli/lib/remediation.js`: plain-English fix recipe per BLOCK-/HIGH-class rule, surfaced inline under each finding in the text report. Covers all v0.4 rules (D24–D34), the OSV/AGE/SC- families, and the existing LS/OB/EX/GL/LF/DC catalog.
+
+### Added — registry-driven signals
+- `MAINT-PUBLISHER-DELTA`: provenance module now flags when a package's latest version was published by a different npm account than the prior version. HIGH / weight 30.
+- `MAINT-CADENCE`: package was dormant for >180 days then suddenly published in the last 14 days. MEDIUM / weight 10. Pairs with PUBLISHER-DELTA or PROV-DOWNGRADE to escalate.
+- `DIFF-NEW-HOOK`: latest version added a `preinstall` / `install` / `postinstall` / `prepare` script that the prior version did not have. HIGH / weight 30.
+- `DIFF-NEW-NET-HOOK`: latest version added a network call inside an install hook that the prior version did not have. CRITICAL / weight 45 / blockAlone.
+- All four signals share the existing `--provenance` flag's registry fetch — one round-trip per direct dep covers them all.
+
+### Added — extensible rule packs
+- `--rules <path|guarddog>` flag: load additional regex-based detector rules from a user-provided JSON file or the bundled `guarddog-lite` pack. New module: `cli/lib/rules.js`, schema `clonesafe.dev/schemas/rule-pack.v1.json`.
+- `detectors/guarddog-lite.json`: hand-ported subset of DataDog GuardDog's highest-signal regex rules (MIT-licensed), covering decode-then-execute patterns, browser-wallet path strings, Python import-scope shell-out, fetch-then-eval, and Ruby native-extension fetches.
+
 ## [0.4.0] — 2026-05-03
 
 ### Added — Phase 0 detectors (D24–D34)
 - **D24 / D24u — GitHub Actions audit.** `.github/workflows/*.yml` discovery via the contents API. D24 (BLOCK) fires on known-malicious commit SHAs from the new `iocs/actions-bad-shas.json` (CVE-2025-30066 tj-actions/changed-files SHA, reviewdog/action-setup) and on action+ref pairs in the tag blocklist. D24u (WARN) fires on third-party actions referenced by mutable tag/branch instead of a 40-char commit SHA. First-party orgs (`actions`, `github`, `docker`, `aws-actions`, `azure`, `google-github-actions`) and local `./` actions are not flagged.
 - **D25 — docs prompt-injection.** Extends D8 (which only scanned README.md) to CONTRIBUTING.md, `.cursorrules`, `.cursor/mcp.json`, `docs/**`, and other doc-like surfaces. WARN floor.
-- **D26 — VS Code auto-execute tasks.** Flags `.vscode/tasks.json` entries with `runOptions.runOn: "folderOpen"`. Comment-tolerant JSON parsing. WARN floor.
-- **D27 — Dockerfile / docker-compose hardening.** Flags `FROM` with mutable tags (`latest`, `lts`, `stable`, `slim`, `alpine`, `edge`, `main`, `master`, `nightly`, `rolling`) when not pinned by `@sha256:` digest, plus `RUN curl|sh` / `RUN wget|sh` patterns. `FROM scratch` is exempt; image-name regex tightened to correctly split `node:20-alpine` into image=`node` tag=`20-alpine`. WARN floor.
+- **D26 — VS Code auto-execute tasks.** Flags `.vscode/tasks.json` entries with `runOptions.runOn: "folderOpen"` (a known DPRK Contagious Interview TTP). Comment-tolerant JSON parsing. WARN floor.
+- **D27 — Dockerfile / docker-compose hardening.** Flags `FROM` with mutable tags (`latest`, `lts`, `stable`, `slim`, `alpine`, `edge`, `main`, `master`, `nightly`, `rolling`) when not pinned by `@sha256:` digest, plus `RUN curl|sh` / `RUN wget|sh` patterns. Same logic for compose `image:` lines. WARN floor.
 - **D28 — Go init() with network/process.** `init()` runs implicitly on package import, so `init()` + `net/http` / `os/exec` / `net.Dial` / `os.Setenv` is the Go analogue of an npm postinstall. WARN floor.
 - **D29 — self-replicating worm signatures.** Matches the new `iocs/worm-signatures.json`: `Shai-Hulud` / `Sha1-Hulud` / `GlassWorm` literal strings, `bundle.js` postinstall pattern, `webhook.site/<uuid>` exfil URLs, and the credential-enumeration shape used by the Sep 2025 / Nov 2025 npm worm waves. BLOCK floor.
 - **D30 — DPRK content signatures.** Matches `iocs/dprk-families.json` `content_signatures`: HexEval long-hex-blob loaders, BeaverTail / InvisibleFerret / OtterCookie family-name strings, `ipcheck.cloud` / `*.workers.dev` victim-fingerprint endpoints. BLOCK floor.
@@ -26,16 +49,13 @@ and clonesafe adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `--osv` flag: queries `api.osv.dev/v1/querybatch` for every direct dep across npm/PyPI/RubyGems/Packagist/crates.io/Go/Maven, surfaces `MAL-*` / `GHSA-MAL-*` advisories from the OpenSSF malicious-packages feed at CRITICAL / weight 50. New module: `cli/lib/osv.js`.
 - `--min-age <duration>` flag: cool-down gate for npm direct deps. Format `48h` / `7d` / `2w`. WARN finding for any direct dep published more recently than the threshold (defangs the fresh-publish takedown window of Shai-Hulud / axios / lottie-class attacks). New module: `cli/lib/package-age.js`.
 - `--scorecard` flag: OpenSSF Scorecard-style probes derived from data already fetched: `Maintained` (last commit recency), `Code-Review` (no merge structure in recent commits), `Dangerous-Workflow` (`pull_request_target` + checkout PR head; `${{ github.event.* }}` interpolation in `run:` blocks). New module: `cli/lib/scorecard.js`.
-- `extractMultiEcosystemDeps()`: utility added to `cli/lib/utils.js`. Returns `{ name, version, ecosystem }` records across npm/pypi/rubygems/composer for downstream OSV consumption.
+- `extractMultiEcosystemDeps()`: utility added to `cli/lib/utils.js`. Returns `{ name, version, ecosystem }` records across npm/pypi/rubygems/composer for downstream OSV / SBOM consumption.
 
 ### Added — IOC databases
 - `iocs/dprk-families.json`: name patterns (vite-plugin / logger families / passport-js shape), content signatures (HexEval, BeaverTail), lure indicators (interview language, "do not run in Docker"). Sourced from Socket / Datadog / Unit 42 / Mandiant / Silent Push / Recorded Future PurpleBravo coverage.
 - `iocs/worm-signatures.json`: Shai-Hulud / Sha1-Hulud / GlassWorm strings, bundle.js postinstall, webhook.site exfil. Sourced from Unit 42 / Sysdig / Datadog / Microsoft Threat Intel.
 - `iocs/actions-bad-shas.json`: CVE-2025-30066 tj-actions/changed-files compromised SHA (CISA AA25-077A), reviewdog/action-setup pivot SHA, plus the tj-actions v1..v45 tag blocklist.
 - All three new IOC files load through `loadIOCs()` (now returns `{packages, domains, orgs, hashes, dprk, worms, actions}`).
-
-### Added — argument parser hardening
-- `looksLikePositional()` heuristic + per-flag `VALUE_SHAPES` map: `--min-age my/repo` now correctly treats `my/repo` as the positional arg instead of consuming it as the duration value. Both the `=` form (`--min-age=48h`) and the bare form (`--min-age 48h`) work without ambiguity.
 
 ### Changed
 - `runAllChecks()` signature now takes `{ owner, repo, repoMeta, ownerMeta, contributors }` so D33 (starjack) and D34 (recruiter-lure) can use repo metadata.

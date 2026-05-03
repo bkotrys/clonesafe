@@ -1,0 +1,34 @@
+# clonesafe CI template — GitLab CI/CD.
+#
+# Drop into the root of your repo as `.gitlab-ci.yml`, or include it
+# from an existing pipeline:
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/bkotrys/clonesafe/main/templates/ci/gitlab-ci.yml'
+#
+# The job fails the pipeline on WARN or BLOCK by default; set
+# CLONESAFE_FAIL_ON to PROCEED / CAUTION / WARN / BLOCK to tune.
+
+clonesafe:
+  stage: test
+  image: node:22-alpine
+  variables:
+    CLONESAFE_VERSION: "0.4.0"
+    CLONESAFE_FAIL_ON: "WARN"
+  script:
+    - npx --yes --package="clonesafe@${CLONESAFE_VERSION}" -- clonesafe "${CI_PROJECT_PATH}@${CI_COMMIT_SHA}" --json > clonesafe-report.json || true
+    - |
+      VERDICT=$(node -e "console.log(require('./clonesafe-report.json').verdict)")
+      echo "clonesafe verdict: ${VERDICT}"
+      case "${VERDICT}" in
+        PROCEED) [ "${CLONESAFE_FAIL_ON}" = "PROCEED" ] && exit 1 || exit 0 ;;
+        CAUTION) case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION) exit 1 ;; esac ;;
+        WARN)    case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION|WARN) exit 1 ;; esac ;;
+        BLOCK)   exit 1 ;;
+      esac
+  artifacts:
+    when: always
+    paths:
+      - clonesafe-report.json
+    reports:
+      sast: clonesafe-report.json

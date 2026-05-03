@@ -1,0 +1,71 @@
+{
+  "$schema": "https://clonesafe.dev/schemas/rule-pack.v1.json",
+  "name": "guarddog-lite",
+  "description": "Hand-ported subset of DataDog GuardDog's highest-signal regex rules. GuardDog itself (https://github.com/DataDog/guarddog) is MIT-licensed; this pack mirrors only the regex-style rules clonesafe can run without Semgrep/YARA. Use `--rules guarddog` to enable.",
+  "license": "MIT",
+  "source": "https://github.com/DataDog/guarddog",
+  "rules": [
+    {
+      "id": "GD-NPM-DECODE-EXEC-1",
+      "risk": "CRITICAL",
+      "weight": 50,
+      "block_alone": true,
+      "applies_to": "*.js",
+      "regex": "(?:eval|new\\s+Function|child_process\\.exec)\\s*\\(\\s*(?:Buffer\\.from|atob)\\s*\\(",
+      "detail": "decode-then-execute pattern (Buffer.from/atob piped into eval, new Function, or child_process.exec)"
+    },
+    {
+      "id": "GD-NPM-DLL-LOAD",
+      "risk": "HIGH",
+      "weight": 30,
+      "applies_to": "*.js",
+      "regex": "require\\s*\\(\\s*['\"][^'\"]+\\.(?:so|dll|dylib)['\"]",
+      "detail": "Node code dynamically loading a shared library by relative path"
+    },
+    {
+      "id": "GD-NPM-WALLET-PATH",
+      "risk": "CRITICAL",
+      "weight": 45,
+      "block_alone": true,
+      "applies_to": "*.js",
+      "regex": "(?:nkbihfbeogaeaoehlefnkodbefgpgknn|bfnaelmomeimhlpmgjnjophhpkkoljpa|hnfanknocfeofbddgcijnmhnfnkdnaad|fhbohimaelbohpjbbldcngcnapndodjp|MetaMask|Phantom|Coinbase Wallet)",
+      "detail": "explicit reference to a browser wallet extension ID or wallet name in source"
+    },
+    {
+      "id": "GD-PY-EXEC-AT-IMPORT",
+      "risk": "CRITICAL",
+      "weight": 50,
+      "block_alone": true,
+      "applies_to": "*.py",
+      "regex": "^\\s*(?:os\\.system|subprocess\\.(?:run|call|Popen|check_call|check_output)|exec|eval)\\s*\\(",
+      "flags": "m",
+      "detail": "Python module with shell-out / eval at import scope"
+    },
+    {
+      "id": "GD-PY-OBFUS-DECODE-EXEC",
+      "risk": "CRITICAL",
+      "weight": 50,
+      "block_alone": true,
+      "applies_to": "*.py",
+      "regex": "exec\\s*\\(\\s*__import__\\s*\\(\\s*['\"](?:base64|zlib|codecs|marshal)['\"]",
+      "detail": "Python decode-then-exec via __import__('base64'/'zlib'/'codecs'/'marshal')"
+    },
+    {
+      "id": "GD-PY-FETCH-AND-EXEC",
+      "risk": "CRITICAL",
+      "weight": 50,
+      "block_alone": true,
+      "applies_to": "*.py",
+      "regex": "(?:requests\\.get|urllib\\.request\\.urlopen|httpx\\.get)\\s*\\([^)]*\\)\\s*\\.\\s*(?:text|read|content)\\s*\\)?\\s*\\)?\\s*[\\s\\S]{0,200}?\\b(?:exec|eval)\\s*\\(",
+      "detail": "Python downloads remote code then evaluates it"
+    },
+    {
+      "id": "GD-RB-EXTCONF-FETCH",
+      "risk": "HIGH",
+      "weight": 30,
+      "applies_to": "*.rb",
+      "regex": "(?:Net::HTTP\\.get|URI\\.open|open\\s*\\(\\s*['\"]https?:)",
+      "detail": "Ruby native-extension build script fetching remote content"
+    }
+  ]
+}

@@ -233,7 +233,96 @@ test('runDetectors smoke test across all fixtures', () => {
   }
 });
 
-// ── unit tests for v0.4 modules ──────────────────────────────────────
+// ── unit tests for v0.5 modules ──────────────────────────────────────
+
+test('sarif: emits 2.1.0 doc with stable fingerprints', () => {
+  const sarif = require('../cli/lib/sarif');
+  const result = {
+    owner: 'foo', repo: 'bar', verdict: 'WARN', score: 30,
+    verdictFloor: 'WARN', floorTriggers: ['D24u'],
+    findings: [{ ruleId: 'D24u', detector: 'workflows', risk: 'HIGH', weight: 25, file: '.github/workflows/ci.yml', line: 5, match: 'codecov/codecov-action@v4', detail: 'unpinned' }],
+    iocFindings: []
+  };
+  const doc = sarif.emit(result);
+  assert.equal(doc.version, '2.1.0');
+  assert.equal(doc.runs.length, 1);
+  assert.equal(doc.runs[0].results.length, 1);
+  const fp1 = doc.runs[0].results[0].partialFingerprints.detectorHash;
+  // Same input → same fingerprint.
+  const doc2 = sarif.emit(result);
+  assert.equal(fp1, doc2.runs[0].results[0].partialFingerprints.detectorHash);
+  assert.equal(fp1.length, 32);
+});
+
+test('sbom: cyclonedx + spdx structures are well-formed', () => {
+  const sbom = require('../cli/lib/sbom');
+  const deps = [{ name: 'react', version: '18.0.0', ecosystem: 'npm' }];
+  const cdx = sbom.emitCycloneDX({ owner: 'foo', repo: 'bar', ref: 'main', deps, findings: [] });
+  assert.equal(cdx.bomFormat, 'CycloneDX');
+  assert.equal(cdx.specVersion, '1.6');
+  assert.equal(cdx.components[0].purl, 'pkg:npm/react@18.0.0');
+  const spdx = sbom.emitSPDX({ owner: 'foo', repo: 'bar', ref: 'main', deps });
+  assert.equal(spdx.spdxVersion, 'SPDX-2.3');
+  assert.equal(spdx.packages.length, 2); // root + 1 dep
+  assert.equal(spdx.relationships[0].relationshipType, 'DEPENDS_ON');
+});
+
+test('baseline: applyToResult drops fingerprints, recomputes verdict', () => {
+  const baseline = require('../cli/lib/baseline');
+  const sarif = require('../cli/lib/sarif');
+  const finding = { ruleId: 'D24u', detector: 'workflows', risk: 'HIGH', weight: 25, file: '.github/workflows/ci.yml', match: 'codecov/codecov-action@v4', detail: 'unpinned' };
+  const fp = sarif.fingerprint(finding);
+  const result = { findings: [finding], iocFindings: [] };
+  const baselineDoc = { entries: [{ fingerprint: fp, reason: 'grandfathered' }] };
+  const out = baseline.applyToResult(result, baselineDoc);
+  assert.equal(out.suppressed, 1);
+  assert.equal(out.result.findings.length, 0);
+});
+
+test('baseline: expired entries do not suppress', () => {
+  const baseline = require('../cli/lib/baseline');
+  const sarif = require('../cli/lib/sarif');
+  const finding = { ruleId: 'D24u', file: 'a.yml', match: 'foo', detail: 'd' };
+  const fp = sarif.fingerprint(finding);
+  const result = { findings: [finding], iocFindings: [] };
+  const expired = { entries: [{ fingerprint: fp, expires: '2020-01-01' }] };
+  const out = baseline.applyToResult(result, expired);
+  assert.equal(out.suppressed, 0);
+  assert.equal(out.result.findings.length, 1);
+});
+
+test('rules: guarddog-lite pack loads and applies', () => {
+  const rules = require('../cli/lib/rules');
+  const pack = rules.resolvePack('guarddog');
+  assert.equal(pack.name, 'guarddog-lite');
+  assert.ok(Array.isArray(pack.rules) && pack.rules.length > 0);
+  // Synthetic Python file that should match GD-PY-EXEC-AT-IMPORT.
+  const files = new Map([['mod.py', 'import os\nos.system("echo pwned")\n']]);
+  const findings = rules.applyExtraRules(files, pack);
+  assert.ok(findings.some(f => f.ruleId === 'GD-PY-EXEC-AT-IMPORT'),
+    `expected GD-PY-EXEC-AT-IMPORT to fire, got: ${findings.map(f => f.ruleId).join(',')}`);
+});
+
+test('rules: applies_to filters by extension', () => {
+  const rules = require('../cli/lib/rules');
+  const pack = {
+    name: 'test',
+    rules: [{ id: 'JS-ONLY', risk: 'HIGH', weight: 10, applies_to: '*.js', regex: 'evil' }]
+  };
+  const files = new Map([['a.py', 'evil'], ['b.js', 'evil']]);
+  const findings = rules.applyExtraRules(files, pack);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'b.js');
+});
+
+test('package-age: parses duration formats', () => {
+  const pa = require('../cli/lib/package-age');
+  assert.equal(pa.parseDuration('48h'), 48 * 3600 * 1000);
+  assert.equal(pa.parseDuration('7d'), 7 * 86400 * 1000);
+  assert.equal(pa.parseDuration('2w'), 14 * 86400 * 1000);
+  assert.equal(pa.parseDuration(''), 0);
+  assert.equal(pa.parseDuration('garbage'), 0);
+});
 
 test('utils: extractMultiEcosystemDeps covers npm/pypi/rubygems/composer', () => {
   const { extractMultiEcosystemDeps } = require('../cli/lib/utils');
@@ -264,11 +353,10 @@ test('osv: ecosystem mapping is correct', () => {
   assert.equal(osv.ecoFromManifest('unknown-eco'), null);
 });
 
-test('package-age: parses duration formats', () => {
-  const pa = require('../cli/lib/package-age');
-  assert.equal(pa.parseDuration('48h'), 48 * 3600 * 1000);
-  assert.equal(pa.parseDuration('7d'), 7 * 86400 * 1000);
-  assert.equal(pa.parseDuration('2w'), 14 * 86400 * 1000);
-  assert.equal(pa.parseDuration(''), 0);
-  assert.equal(pa.parseDuration('garbage'), 0);
+test('remediation: returns concrete fix for known rule IDs', () => {
+  const { getRemediation } = require('../cli/lib/remediation');
+  assert.ok(getRemediation('LS-004'), 'LS-004 should have remediation');
+  assert.ok(getRemediation('D29'), 'D29 (worm) should have remediation');
+  assert.ok(getRemediation('OSV-MAL'), 'OSV-MAL should have remediation');
+  assert.equal(getRemediation('NEVER-DEFINED'), null);
 });

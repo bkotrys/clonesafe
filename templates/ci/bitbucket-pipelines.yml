@@ -1,0 +1,39 @@
+# clonesafe CI template — Bitbucket Pipelines.
+#
+# Save as `bitbucket-pipelines.yml` at your repo root, or merge the
+# `clonesafe` step into your existing pipelines.
+#
+# Set CLONESAFE_FAIL_ON in repository variables (default WARN) to tune
+# strictness. Pipeline marks the step failed for any verdict at or
+# above the threshold.
+
+image: node:22-alpine
+
+definitions:
+  steps:
+    - step: &clonesafe
+        name: clonesafe pre-clone scan
+        script:
+          - apk add --no-cache jq
+          - export CLONESAFE_VERSION="${CLONESAFE_VERSION:-0.4.0}"
+          - export CLONESAFE_FAIL_ON="${CLONESAFE_FAIL_ON:-WARN}"
+          - npx --yes --package="clonesafe@${CLONESAFE_VERSION}" -- clonesafe "${BITBUCKET_REPO_FULL_NAME}@${BITBUCKET_COMMIT}" --json > clonesafe-report.json || true
+          - VERDICT=$(jq -r '.verdict' clonesafe-report.json)
+          - echo "clonesafe verdict ${VERDICT}"
+          - |
+            case "${VERDICT}" in
+              PROCEED)  [ "${CLONESAFE_FAIL_ON}" = "PROCEED" ] && exit 1 || exit 0 ;;
+              CAUTION)  case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION) exit 1 ;; esac ;;
+              WARN)     case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION|WARN) exit 1 ;; esac ;;
+              BLOCK)    exit 1 ;;
+            esac
+        artifacts:
+          - clonesafe-report.json
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *clonesafe
+  branches:
+    main:
+      - step: *clonesafe

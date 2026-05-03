@@ -1,0 +1,35 @@
+# clonesafe CI template — CircleCI.
+#
+# Save as `.circleci/config.yml`. Adjust CLONESAFE_FAIL_ON via project
+# environment variables; default WARN matches the GitHub Action.
+
+version: 2.1
+
+jobs:
+  clonesafe:
+    docker:
+      - image: cimg/node:22.11
+    environment:
+      CLONESAFE_VERSION: "0.4.0"
+      CLONESAFE_FAIL_ON: "WARN"
+    steps:
+      - run:
+          name: Run clonesafe pre-clone scan
+          command: |
+            REPO="${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}@${CIRCLE_SHA1}"
+            npx --yes --package="clonesafe@${CLONESAFE_VERSION}" -- clonesafe "${REPO}" --json > clonesafe-report.json || true
+            VERDICT=$(node -e "console.log(require('./clonesafe-report.json').verdict)")
+            echo "clonesafe verdict: ${VERDICT}"
+            case "${VERDICT}" in
+              PROCEED)  [ "${CLONESAFE_FAIL_ON}" = "PROCEED" ] && exit 1 || exit 0 ;;
+              CAUTION)  case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION) exit 1 ;; esac ;;
+              WARN)     case "${CLONESAFE_FAIL_ON}" in PROCEED|CAUTION|WARN) exit 1 ;; esac ;;
+              BLOCK)    exit 1 ;;
+            esac
+      - store_artifacts:
+          path: clonesafe-report.json
+
+workflows:
+  security:
+    jobs:
+      - clonesafe
